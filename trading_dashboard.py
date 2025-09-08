@@ -400,9 +400,9 @@ with st.sidebar:
         <div class="sidebar-metric">
             <div style="display: flex; justify-content: space-between; align-items: center;">
                 <span style="font-size: 0.9rem;">Win Rate</span>
-                <span style="font-weight: 600; color: white;">{win_rate:.1f}%</span>
+                <span style="font-weight: 600; color: #1f2937;">{win_rate:.1f}%</span>
             </div>
-            <div style="background: rgba(255,255,255,0.2); border-radius: 8px; height: 6px; margin-top: 0.5rem;">
+            <div style="background: rgba(229, 231, 235, 0.8); border-radius: 8px; height: 6px; margin-top: 0.5rem;">
                 <div style="background: #10b981; height: 6px; border-radius: 8px; width: {win_rate}%;"></div>
             </div>
         </div>
@@ -412,7 +412,7 @@ with st.sidebar:
         <div class="sidebar-metric">
             <div style="display: flex; justify-content: space-between;">
                 <span style="font-size: 0.9rem;">Total Trades</span>
-                <span style="font-weight: 600; color: white;">{summary_stats['total_trades']:,}</span>
+                <span style="font-weight: 600; color: #1f2937;">{summary_stats['total_trades']:,}</span>
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -774,7 +774,7 @@ if trades_df is not None and not trades_df.empty:
                         <div style="font-size: 1.5rem; font-weight: 600; color: {avg_color};">${avg_trade:,.2f}</div>
                     </div>
                     """, unsafe_allow_html=True)
-    
+
     elif ohlc_df is not None:
         st.warning("Could not process OHLC data. Ensure the file contains an 'asset' column.")
     
