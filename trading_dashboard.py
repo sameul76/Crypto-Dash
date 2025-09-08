@@ -535,16 +535,12 @@ if trades_df is not None and not trades_df.empty:
     st.markdown('<h2 class="section-title">Asset Analysis</h2>', unsafe_allow_html=True)
     
     if ohlc_df is not None and 'asset' in ohlc_df.columns:
-        # Debug: Show what assets are actually available
-        available_assets = ohlc_df['asset'].unique()
-        st.write("**Debug - Available assets in OHLC data:**", list(available_assets))
-        
         # Look for CVX data (might be named just "CVX")
+        available_assets = ohlc_df['asset'].unique()
         cvx_assets = [asset for asset in available_assets if 'CVX' in asset.upper()]
-        st.write("**Debug - CVX assets found:**", cvx_assets)
         
         # Calculate CVX timeframes if base CVX data exists
-        cvx_options = []
+        asset_options = []
         
         if cvx_assets:
             # Use the first CVX asset found as base 1-min data
@@ -576,34 +572,28 @@ if trades_df is not None and not trades_df.empty:
             # Add calculated CVX data to main ohlc_df
             ohlc_df_with_cvx = pd.concat([ohlc_df, cvx_1min, cvx_5min], ignore_index=True)
             
-            # Update available assets
-            available_assets = ohlc_df_with_cvx['asset'].unique()
-            
             # Use the updated dataframe for analysis
             ohlc_df = ohlc_df_with_cvx
             
-            # Add CVX options
-            cvx_options.append(('1 min CVX', 'CVX_1min'))
-            cvx_options.append(('5 min CVX', 'CVX_5min'))
-            
-            st.success(f"Successfully calculated CVX_1min and CVX_5min from {base_cvx_asset}")
+            # Add CVX options first
+            asset_options.append(('1 min CVX', 'CVX_1min'))
+            asset_options.append(('5 min CVX', 'CVX_5min'))
         
-        # If no CVX data found, fall back to all assets
-        if not cvx_options:
-            st.warning("No CVX data found in OHLC data. Showing all available assets.")
-            cvx_options = [(asset, asset) for asset in sorted(available_assets)]
+        # Add all other assets from the original data
+        for asset in sorted(available_assets):
+            asset_options.append((asset, asset))
         
         col1, col2 = st.columns([3, 1])
         with col1:
-            # Display friendly names but use actual asset names for data
-            display_options = [option[0] for option in cvx_options]
+            # Display all available assets including calculated CVX timeframes
+            display_options = [option[0] for option in asset_options]
             selected_display = st.selectbox(
                 'Select Asset', 
                 options=display_options, 
                 index=0
             )
             # Get the actual asset name
-            selected_asset = next(option[1] for option in cvx_options if option[0] == selected_display)
+            selected_asset = next(option[1] for option in asset_options if option[0] == selected_display)
         with col2:
             time_range = st.selectbox(
                 'Time Range',
