@@ -22,12 +22,16 @@ st.set_page_config(
 # Function to authorize and build the Google Drive service
 def get_gdrive_service():
     """Initializes the Google Drive API service using Streamlit's secrets."""
+    # Check if the secret is available before trying to access it.
+    if "gcp_service_account" not in st.secrets:
+        st.error("GCP service account credentials not found in Streamlit Secrets.")
+        st.info("Please follow the setup guide to add your credentials to your app's settings.")
+        return None
+    
     # The structure of the secrets should match the JSON key file.
-    # We use st.secrets for secure credential management.
-    scopes = ['https://www.googleapis.com/auth/drive.readonly']
     creds = Credentials.from_service_account_info(
         st.secrets["gcp_service_account"],
-        scopes=scopes
+        scopes=['https://www.googleapis.com/auth/drive.readonly']
     )
     service = build('drive', 'v3', credentials=creds)
     return service
@@ -50,7 +54,10 @@ def read_gdrive_file(file_id, service):
         df = pd.read_csv(file_bytes)
         return df
     except Exception as e:
-        st.error(f"Error reading file with ID '{file_id}' from Google Drive: {e}")
+        # Catch potential errors if the file ID is wrong or file is not shared
+        st.error(f"Error reading file with ID '{file_id}' from Google Drive.")
+        st.warning(f"Details: {e}")
+        st.info("Please ensure the file ID is correct and you have shared the file with the service account email.")
         return None
 
 # --- P&L Calculation ---
@@ -87,8 +94,9 @@ def calculate_pnl(trades_df):
             positions[asset]['cost'] += quantity * price
             positions[asset]['quantity'] += quantity
         elif action == 'sell':
-            if positions[asset]['quantity'] > 0:
-                avg_cost_per_unit = positions[asset]['cost'] / positions[asset]['quantity']
+            if positions[asset]['quantity'] > 0 and positions[asset]['cost'] is not None:
+                # Avoid division by zero if quantity is positive but cost is somehow None
+                avg_cost_per_unit = positions[asset]['cost'] / positions[asset]['quantity'] if positions[asset]['quantity'] > 0 else 0
                 realized_pnl = (price - avg_cost_per_unit) * min(quantity, positions[asset]['quantity'])
                 pnl_per_asset[asset] += realized_pnl
                 total_cumulative_pnl += realized_pnl
@@ -110,15 +118,16 @@ st.title("📈 Trading Bot Performance Dashboard")
 # Use caching to avoid re-downloading data on every interaction.
 @st.cache_data(ttl=600) # Cache for 10 minutes
 def load_data():
-    # !!! IMPORTANT !!!
-    # REPLACE THESE WITH YOUR ACTUAL GOOGLE DRIVE FILE IDs
-    # You can get the File ID from the shareable link.
-    # e.g., in "drive.google.com/file/d/THIS_IS_THE_ID/view", the ID is "THIS_IS_THE_ID"
-    TRADES_FILE_ID = "YOUR_TRADES_FILE_ID_HERE"
-    OHLC_FILE_ID = "YOUR_OHLC_DATA_FILE_ID_HERE"
-    
     # Initialize the Google Drive service
     gdrive_service = get_gdrive_service()
+    
+    # If service fails to initialize (e.g., missing secrets), stop here.
+    if gdrive_service is None:
+        return None, None, None
+
+    # File IDs from your Google Drive links
+    TRADES_FILE_ID = "1zSdFcG4Xlh_iSa180V6LRSeEucAokXYk"
+    OHLC_FILE_ID = "1kxOB0PCGaT7N0Ljv4-EUDqYCnnTyd0SK"
     
     # Load the data files
     trades = read_gdrive_file(TRADES_FILE_ID, gdrive_service)
@@ -140,15 +149,17 @@ if st.sidebar.button('🔄 Refresh Data'):
     st.rerun()
 
 # --- Main App Logic (Proceed only if data is loaded) ---
+# Check if data loading was successful before trying to display anything
 if trades_df is not None and not trades_df.empty:
     # --- P&L Summary Section ---
     st.subheader("Total P&L per Asset")
-    cols = st.columns(len(pnl_summary))
-    asset_names = sorted(pnl_summary.keys())
-    for i, asset in enumerate(asset_names):
-        pnl_value = pnl_summary[asset]
-        with cols[i]:
-            st.metric(label=asset, value=f"${pnl_value:,.2f}")
+    if pnl_summary:
+        cols = st.columns(len(pnl_summary))
+        asset_names = sorted(pnl_summary.keys())
+        for i, asset in enumerate(asset_names):
+            pnl_value = pnl_summary.get(asset, 0)
+            with cols[i]:
+                st.metric(label=asset, value=f"${pnl_value:,.2f}")
     st.markdown("---")
 
     # --- Chart 1: Overall P&L Over Time ---
@@ -165,17 +176,16 @@ if trades_df is not None and not trades_df.empty:
 
     # --- Chart 2: Asset-Specific Candlestick Chart ---
     st.subheader("Asset-Specific Analysis")
-    # Assuming your OHLC data has an 'asset' column to filter by.
-    # If not, you might need a separate file for each asset's OHLC data.
     if ohlc_df is not None and 'asset' in ohlc_df.columns:
         available_assets_ohlc = ohlc_df['asset'].unique()
         selected_asset = st.selectbox('Select Asset', options=available_assets_ohlc, index=0)
 
         if selected_asset:
             asset_trades = trades_df[trades_df['asset'] == selected_asset]
-            asset_ohlc = ohlc_df[ohlc_df['asset'] == selected_asset]
+            asset_ohlc = ohlc_df[ohlc_df['asset'] == selected_asset].copy() # Use .copy() to avoid SettingWithCopyWarning
             # Ensure timestamp columns are datetime objects for plotting
             asset_ohlc['timestamp'] = pd.to_datetime(asset_ohlc['timestamp'])
+            asset_trades = asset_trades.copy()
             asset_trades['timestamp'] = pd.to_datetime(asset_trades['timestamp'])
 
             fig_asset = go.Figure()
@@ -188,14 +198,8 @@ if trades_df is not None and not trades_df.empty:
 
             fig_asset.update_layout(title=f'Price History and Trades for {selected_asset}', xaxis_title='Date', yaxis_title='Price (USD)', template='plotly_white', xaxis_rangeslider_visible=True)
             st.plotly_chart(fig_asset, use_container_width=True)
-    else:
-        st.warning("Could not load or process OHLC data. Ensure the Google Drive file is correct and contains an 'asset' column.")
-else:
-    st.header("Could not load trading data from Google Drive.")
-    st.warning("Please check the following:")
-    st.markdown("""
-    1.  Have you replaced `"YOUR_TRADES_FILE_ID_HERE"` in the script with your actual file ID?
-    2.  Have you configured your Streamlit Secrets correctly?
-    3.  Did you share the Google Drive file with your service account's email?
-    """)
+    elif ohlc_df is not None:
+        st.warning("Could not process OHLC data. Ensure the Google Drive file is correct and contains an 'asset' column.")
+# The "else" case is implicitly handled by the error message inside get_gdrive_service now.
+# This prevents the app from showing the generic "Could not load data" if the specific error is missing secrets.
 
