@@ -86,6 +86,24 @@ def read_gdrive_parquet(file_bytes):
         return None
     return pd.read_parquet(file_bytes)
 
+# --- Helpers ---
+def normalize_timestamp(s: pd.Series) -> pd.Series:
+    """Make datetimes comparable: convert tz-aware to UTC then drop tz; keep naive as naive."""
+    dt = pd.to_datetime(s, errors="coerce")
+    try:
+        # If any tz-aware, convert to UTC then make naive
+        if dt.dt.tz is not None:
+            dt = dt.dt.tz_convert("UTC").dt.tz_localize(None)
+    except Exception:
+        # If all naive, ensure no tz
+        dt = dt.dt.tz_localize(None)
+    return dt
+
+def lower_strip_cols(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df.columns = [c.lower().strip() for c in df.columns]
+    return df
+
 # --- P&L + metrics ---
 def calculate_pnl_and_metrics(trades_df):
     if trades_df is None or trades_df.empty:
@@ -153,29 +171,81 @@ def load_data():
     service = get_gdrive_service()
     if service is None:
         return None, None, None, None
+
+    # 🔑 Update these IDs to match your Drive files
     TRADES_FILE_ID = "1zSdFcG4Xlh_iSa180V6LRSeEucAokXYk"
     OHLC_FILE_ID   = "1kxOB0PCGaT7N0Ljv4-EUDqYCnnTyd0SK"
+    PROB_FILE_ID   = "PUT_PROBABILITY_LOG_FILE_ID_HERE"  # CSV: timestamp, product_id, P_up, P_down
+
     trades = read_gdrive_csv(download_file_from_drive(TRADES_FILE_ID, service))
     ohlc   = read_gdrive_parquet(download_file_from_drive(OHLC_FILE_ID, service))
+    probs  = read_gdrive_csv(download_file_from_drive(PROB_FILE_ID, service)) if PROB_FILE_ID and PROB_FILE_ID != "PUT_PROBABILITY_LOG_FILE_ID_HERE" else None
 
+    # --- Normalize + rename
     if trades is not None:
-        trades = trades.rename(columns={'product_id':'asset','side':'action','size':'quantity'})
-        trades.columns = [c.lower().strip() for c in trades.columns]
+        trades = lower_strip_cols(trades)
+        # standardize columns
+        if 'product_id' in trades.columns:
+            trades['asset'] = trades['product_id']
+        trades = trades.rename(columns={'side':'action','size':'quantity'})
+        trades['timestamp'] = normalize_timestamp(trades['timestamp'])
         if 'action' in trades.columns:
             trades['action'] = trades['action'].str.lower()
-        required_trade_cols = ['timestamp','asset','action','price','quantity']
-        if not all(c in trades.columns for c in required_trade_cols):
-            st.error(f"Trades file missing required columns: {required_trade_cols}")
+        req_tr_cols = ['timestamp','asset','action','price','quantity']
+        if not all(c in trades.columns for c in req_tr_cols):
+            st.error(f"Trades file missing required columns: {req_tr_cols}")
             return None, None, ohlc, None
 
     if ohlc is not None:
-        ohlc.columns = [c.lower().strip() for c in ohlc.columns]
-        if 'product_id' in ohlc.columns:
-            ohlc = ohlc.rename(columns={'product_id':'asset'})
-        required_ohlc_cols = ['timestamp','asset','open','high','low','close']
-        if not all(c in ohlc.columns for c in required_ohlc_cols):
-            st.error(f"OHLC file missing required columns: {required_ohlc_cols}")
+        ohlc = lower_strip_cols(ohlc)
+        # ensure we have product_id consistently (not 'asset')
+        if 'product_id' not in ohlc.columns and 'asset' in ohlc.columns:
+            ohlc = ohlc.rename(columns={'asset':'product_id'})
+        ohlc['timestamp'] = normalize_timestamp(ohlc['timestamp'])
+        req_ohlc_cols = ['timestamp','product_id','open','high','low','close']
+        if not all(c in ohlc.columns for c in req_ohlc_cols):
+            st.error(f"OHLC file missing required columns: {req_ohlc_cols}")
             return trades, None, None, None
+
+    # --- Load + normalize probability log
+    if probs is not None and not probs.empty:
+        probs = lower_strip_cols(probs)
+        if 'product_id' not in probs.columns and 'asset' in probs.columns:
+            probs = probs.rename(columns={'asset':'product_id'})
+        # Standardize probability columns to p_up / p_down
+        rename_map = {}
+        for c in list(probs.columns):
+            cl = c.lower()
+            if cl in {'p_up','p-up','pup','prob_up','p_up_prob','puprob'}:   rename_map[c] = 'p_up'
+            if cl in {'p_down','p-down','pdown','prob_down','p_down_prob','pdownprob'}: rename_map[c] = 'p_down'
+        probs = probs.rename(columns=rename_map)
+        keep = [c for c in ['timestamp','product_id','p_up','p_down'] if c in probs.columns]
+        probs = probs[keep].copy()
+        probs['timestamp'] = normalize_timestamp(probs['timestamp'])
+        for pc in ['p_up','p_down']:
+            if pc in probs.columns: probs[pc] = pd.to_numeric(probs[pc], errors='coerce')
+
+        # --- Merge probabilities onto OHLC per product_id (±1min)
+        if ohlc is not None and not ohlc.empty:
+            ohlc = ohlc.sort_values(['product_id','timestamp'])
+            probs = probs.sort_values(['product_id','timestamp'])
+            ohlc = pd.merge_asof(
+                ohlc,
+                probs,
+                on='timestamp',
+                by='product_id',
+                direction='nearest',
+                tolerance=pd.Timedelta('1min')
+            )
+    else:
+        # make empty columns so hover builder doesn't break
+        if ohlc is not None:
+            if 'p_up' not in ohlc.columns:   ohlc['p_up'] = np.nan
+            if 'p_down' not in ohlc.columns: ohlc['p_down'] = np.nan
+
+    # also create an 'asset' field aligned with trades for P&L section (use product_id)
+    if ohlc is not None and 'product_id' in ohlc.columns:
+        ohlc['asset'] = ohlc['product_id']
 
     if trades is not None:
         pnl_summary, trades_with_pnl, stats = calculate_pnl_and_metrics(trades)
@@ -311,54 +381,36 @@ if trades_df is not None and not trades_df.empty:
 
     if ohlc_df is not None and 'asset' in ohlc_df.columns:
         available_assets = ohlc_df['asset'].unique()
-        cvx_assets = [a for a in available_assets if 'CVX' in a.upper()]
+        # detect any product_ids that start with "CVX" to build 1min/5min variants
+        base_like_cvx = [a for a in available_assets if str(a).upper().startswith("CVX")]
         asset_options = []
 
-        if cvx_assets:
-            # --- CVX variants with probabilities preserved ---
-            base = cvx_assets[0]
-            cvx = ohlc_df[ohlc_df['asset'] == base].copy()
+        # Build CVX variants with probabilities preserved
+        if base_like_cvx:
+            base_asset = base_like_cvx[0]  # e.g., "CVX-USD"
+            cvx = ohlc_df[ohlc_df['asset'] == base_asset].copy()
             cvx['timestamp'] = pd.to_datetime(cvx['timestamp'])
             cvx = cvx.sort_values('timestamp').set_index('timestamp')
 
-            # Detect probability columns present on base CVX
-            prob_candidates = {
-                "p_up","p-up","pup","p_up_prob","puprob","puprobability",
-                "p_down","p-down","pdown","p_down_prob","pdownprob","pdownprobability",
-                "prob_up","prob_down"
-            }
-            prob_cols = [c for c in cvx.columns if c.lower() in prob_candidates]
-
-            # Ensure probs are numeric
+            prob_cols = [c for c in cvx.columns if c in {'p_up','p_down'}]
             for pc in prob_cols:
                 cvx[pc] = pd.to_numeric(cvx[pc], errors="coerce")
 
-            # 1-minute variant keeps ALL columns, including probs
             cvx_1min = cvx.copy()
             cvx_1min['asset'] = 'CVX_1min'
             cvx_1min = cvx_1min.reset_index()
 
-            # 5-minute variant: OHLC with probability aggregation (mean)
-            agg_map = {
-                'open': 'first',
-                'high': 'max',
-                'low' : 'min',
-                'close':'last',
-                'asset':'first',
-            }
+            agg_map = {'open':'first','high':'max','low':'min','close':'last','asset':'first'}
             for pc in prob_cols:
-                agg_map[pc] = 'mean'  # use 'last' if you prefer
-
+                agg_map[pc] = 'mean'
             cvx_5min = cvx.resample('5min').agg(agg_map).dropna(subset=['open','high','low','close'])
             cvx_5min['asset'] = 'CVX_5min'
             cvx_5min = cvx_5min.reset_index()
 
-            # Merge back into main OHLC
             ohlc_df = pd.concat([ohlc_df, cvx_1min, cvx_5min], ignore_index=True)
-
-            # Add to selector (show CVX variants first)
             asset_options += [('1 min CVX','CVX_1min'), ('5 min CVX','CVX_5min')]
 
+        # Add all other instruments
         for a in sorted(available_assets):
             asset_options.append((a, a))
 
@@ -395,33 +447,16 @@ if trades_df is not None and not trades_df.empty:
                 filtered_trades = asset_trades[mask_trd].copy()
 
                 if not filtered_ohlc.empty:
-                    # ---------- Candlestick (max compatibility): build tooltip strings ----------
-                    def find_col(candidates, cols):
-                        for c in candidates:
-                            if c in cols: return c
-                        return None
-
                     ohlc = filtered_ohlc.copy()
                     ohlc["timestamp"] = pd.to_datetime(ohlc["timestamp"], errors="coerce")
                     for c in ["open","high","low","close"]:
                         ohlc[c] = pd.to_numeric(ohlc[c], errors="coerce")
                     ohlc = ohlc.dropna(subset=["timestamp","open","high","low","close"]).reset_index(drop=True)
 
-                    cols_lower = set(ohlc.columns.str.lower())
-                    colmap = {c.lower(): c for c in ohlc.columns}
-                    p_up_key   = find_col(["p_up","p-up","pup","p_up_prob","puprob","puprobability","prob_up"], cols_lower)
-                    p_down_key = find_col(["p_down","p-down","pdown","p_down_prob","pdownprob","pdownprobability","prob_down"], cols_lower)
-
-                    def pull_series(key):
-                        if key is None or colmap.get(key) not in ohlc.columns:
-                            return [None] * len(ohlc)
-                        return list(pd.to_numeric(ohlc[colmap[key]], errors="coerce"))
-
-                    pu_raw = pull_series(p_up_key)
-                    pd_raw = pull_series(p_down_key)
-
                     def fmt(v): 
                         return f"{float(v):.4f}" if v is not None and pd.notna(v) else "—"
+                    pu  = ohlc['p_up']   if 'p_up' in ohlc.columns   else pd.Series([None]*len(ohlc))
+                    pdn = ohlc['p_down'] if 'p_down' in ohlc.columns else pd.Series([None]*len(ohlc))
 
                     hovertext = [
                         "📅 " + ohlc.loc[i, "timestamp"].strftime("%Y-%m-%d %H:%M:%S") +
@@ -429,8 +464,8 @@ if trades_df is not None and not trades_df.empty:
                         f"<br>High: ${float(ohlc.loc[i,'high']):.4f}" +
                         f"<br>Low: ${float(ohlc.loc[i,'low']):.4f}" +
                         f"<br>Close: ${float(ohlc.loc[i,'close']):.4f}" +
-                        f"<br>P-Up: {fmt(pu_raw[i])}" +
-                        f"<br>P-Down: {fmt(pd_raw[i])}"
+                        f"<br>P-Up: {fmt(pu.iloc[i])}" +
+                        f"<br>P-Down: {fmt(pdn.iloc[i])}"
                         for i in range(len(ohlc))
                     ]
 
@@ -443,7 +478,7 @@ if trades_df is not None and not trades_df.empty:
                             close=ohlc["close"],
                             name="Price",
                             text=hovertext,
-                            hoverinfo="text"  # show only our prebuilt tooltip
+                            hoverinfo="text"
                         ),
                         secondary_y=False
                     )
