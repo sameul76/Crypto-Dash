@@ -535,17 +535,62 @@ if trades_df is not None and not trades_df.empty:
     st.markdown('<h2 class="section-title">Asset Analysis</h2>', unsafe_allow_html=True)
     
     if ohlc_df is not None and 'asset' in ohlc_df.columns:
-        # Check for specific CVX assets
+        # Debug: Show what assets are actually available
         available_assets = ohlc_df['asset'].unique()
+        st.write("**Debug - Available assets in OHLC data:**", list(available_assets))
+        
+        # Look for CVX data (might be named just "CVX")
+        cvx_assets = [asset for asset in available_assets if 'CVX' in asset.upper()]
+        st.write("**Debug - CVX assets found:**", cvx_assets)
+        
+        # Calculate CVX timeframes if base CVX data exists
         cvx_options = []
         
-        if 'CVX_1min' in available_assets:
+        if cvx_assets:
+            # Use the first CVX asset found as base 1-min data
+            base_cvx_asset = cvx_assets[0]
+            
+            # Get CVX data for processing
+            cvx_data = ohlc_df[ohlc_df['asset'] == base_cvx_asset].copy()
+            cvx_data['timestamp'] = pd.to_datetime(cvx_data['timestamp'])
+            cvx_data = cvx_data.sort_values('timestamp').set_index('timestamp')
+            
+            # Create CVX_1min (use existing data)
+            cvx_1min = cvx_data.copy()
+            cvx_1min['asset'] = 'CVX_1min'
+            
+            # Create CVX_5min (resample from 1-min data)
+            cvx_5min = cvx_data.resample('5min').agg({
+                'open': 'first',
+                'high': 'max',
+                'low': 'min',
+                'close': 'last',
+                'asset': 'first'
+            }).dropna()
+            cvx_5min['asset'] = 'CVX_5min'
+            
+            # Reset indices and add to main dataframe
+            cvx_1min = cvx_1min.reset_index()
+            cvx_5min = cvx_5min.reset_index()
+            
+            # Add calculated CVX data to main ohlc_df
+            ohlc_df_with_cvx = pd.concat([ohlc_df, cvx_1min, cvx_5min], ignore_index=True)
+            
+            # Update available assets
+            available_assets = ohlc_df_with_cvx['asset'].unique()
+            
+            # Use the updated dataframe for analysis
+            ohlc_df = ohlc_df_with_cvx
+            
+            # Add CVX options
             cvx_options.append(('1 min CVX', 'CVX_1min'))
-        if 'CVX_5min' in available_assets:
             cvx_options.append(('5 min CVX', 'CVX_5min'))
+            
+            st.success(f"Successfully calculated CVX_1min and CVX_5min from {base_cvx_asset}")
         
-        # If CVX assets not found, fall back to all assets
+        # If no CVX data found, fall back to all assets
         if not cvx_options:
+            st.warning("No CVX data found in OHLC data. Showing all available assets.")
             cvx_options = [(asset, asset) for asset in sorted(available_assets)]
         
         col1, col2 = st.columns([3, 1])
@@ -553,7 +598,7 @@ if trades_df is not None and not trades_df.empty:
             # Display friendly names but use actual asset names for data
             display_options = [option[0] for option in cvx_options]
             selected_display = st.selectbox(
-                'Select CVX Timeframe', 
+                'Select Asset', 
                 options=display_options, 
                 index=0
             )
