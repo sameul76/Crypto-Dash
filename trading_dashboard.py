@@ -682,10 +682,10 @@ if trades_df is not None and not trades_df.empty:
                     </div>
                     """, unsafe_allow_html=True)
     
-    st.markdown('</div>', unsafe_allow_html=True)
-
     elif ohlc_df is not None:
         st.warning("Could not process OHLC data. Ensure the file contains an 'asset' column.")
+    
+    st.markdown('</div>', unsafe_allow_html=True)
 
 else:
     st.error("No trading data available. Please check your data connection.")
