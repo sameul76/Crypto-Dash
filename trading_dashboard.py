@@ -315,15 +315,48 @@ if trades_df is not None and not trades_df.empty:
         asset_options = []
 
         if cvx_assets:
+            # --- CVX variants with probabilities preserved ---
             base = cvx_assets[0]
             cvx = ohlc_df[ohlc_df['asset'] == base].copy()
             cvx['timestamp'] = pd.to_datetime(cvx['timestamp'])
             cvx = cvx.sort_values('timestamp').set_index('timestamp')
-            cvx_1 = cvx.copy(); cvx_1['asset'] = 'CVX_1min'
-            cvx_5 = cvx.resample('5min').agg({'open':'first','high':'max','low':'min','close':'last','asset':'first'}).dropna()
-            cvx_5['asset'] = 'CVX_5min'
-            cvx_1 = cvx_1.reset_index(); cvx_5 = cvx_5.reset_index()
-            ohlc_df = pd.concat([ohlc_df, cvx_1, cvx_5], ignore_index=True)
+
+            # Detect probability columns present on base CVX
+            prob_candidates = {
+                "p_up","p-up","pup","p_up_prob","puprob","puprobability",
+                "p_down","p-down","pdown","p_down_prob","pdownprob","pdownprobability",
+                "prob_up","prob_down"
+            }
+            prob_cols = [c for c in cvx.columns if c.lower() in prob_candidates]
+
+            # Ensure probs are numeric
+            for pc in prob_cols:
+                cvx[pc] = pd.to_numeric(cvx[pc], errors="coerce")
+
+            # 1-minute variant keeps ALL columns, including probs
+            cvx_1min = cvx.copy()
+            cvx_1min['asset'] = 'CVX_1min'
+            cvx_1min = cvx_1min.reset_index()
+
+            # 5-minute variant: OHLC with probability aggregation (mean)
+            agg_map = {
+                'open': 'first',
+                'high': 'max',
+                'low' : 'min',
+                'close':'last',
+                'asset':'first',
+            }
+            for pc in prob_cols:
+                agg_map[pc] = 'mean'  # use 'last' if you prefer
+
+            cvx_5min = cvx.resample('5min').agg(agg_map).dropna(subset=['open','high','low','close'])
+            cvx_5min['asset'] = 'CVX_5min'
+            cvx_5min = cvx_5min.reset_index()
+
+            # Merge back into main OHLC
+            ohlc_df = pd.concat([ohlc_df, cvx_1min, cvx_5min], ignore_index=True)
+
+            # Add to selector (show CVX variants first)
             asset_options += [('1 min CVX','CVX_1min'), ('5 min CVX','CVX_5min')]
 
         for a in sorted(available_assets):
@@ -362,7 +395,7 @@ if trades_df is not None and not trades_df.empty:
                 filtered_trades = asset_trades[mask_trd].copy()
 
                 if not filtered_ohlc.empty:
-                    # ---------- Candlestick: max compatibility ----------
+                    # ---------- Candlestick (max compatibility): build tooltip strings ----------
                     def find_col(candidates, cols):
                         for c in candidates:
                             if c in cols: return c
@@ -376,20 +409,20 @@ if trades_df is not None and not trades_df.empty:
 
                     cols_lower = set(ohlc.columns.str.lower())
                     colmap = {c.lower(): c for c in ohlc.columns}
-                    p_up_key   = find_col(["p_up","p-up","pup","puprob","p_up_prob","puprobability"], cols_lower)
-                    p_down_key = find_col(["p_down","p-down","pdown","pdownprob","p_down_prob","pdownprobability"], cols_lower)
+                    p_up_key   = find_col(["p_up","p-up","pup","p_up_prob","puprob","puprobability","prob_up"], cols_lower)
+                    p_down_key = find_col(["p_down","p-down","pdown","p_down_prob","pdownprob","pdownprobability","prob_down"], cols_lower)
 
                     def pull_series(key):
                         if key is None or colmap.get(key) not in ohlc.columns:
                             return [None] * len(ohlc)
-                        return list(ohlc[colmap[key]])
+                        return list(pd.to_numeric(ohlc[colmap[key]], errors="coerce"))
 
                     pu_raw = pull_series(p_up_key)
                     pd_raw = pull_series(p_down_key)
 
-                    # Build a safe HTML tooltip per row
                     def fmt(v): 
                         return f"{float(v):.4f}" if v is not None and pd.notna(v) else "—"
+
                     hovertext = [
                         "📅 " + ohlc.loc[i, "timestamp"].strftime("%Y-%m-%d %H:%M:%S") +
                         f"<br>Open: ${float(ohlc.loc[i,'open']):.4f}" +
@@ -409,8 +442,8 @@ if trades_df is not None and not trades_df.empty:
                             low=ohlc["low"],
                             close=ohlc["close"],
                             name="Price",
-                            text=hovertext,           # prebuilt HTML
-                            hoverinfo="text"          # show only our text (max compatibility)
+                            text=hovertext,
+                            hoverinfo="text"  # show only our prebuilt tooltip
                         ),
                         secondary_y=False
                     )
