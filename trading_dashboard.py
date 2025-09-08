@@ -19,53 +19,49 @@ st.set_page_config(
 
 # --- Google Drive Data Loading ---
 
-# Function to authorize and build the Google Drive service
 def get_gdrive_service():
     """Initializes the Google Drive API service using Streamlit's secrets."""
-    # Check if the secret is available before trying to access it.
     if "gcp_service_account" not in st.secrets:
         st.error("GCP service account credentials not found in Streamlit Secrets.")
         st.info("Please follow the setup guide to add your credentials to your app's settings.")
         return None
-    
-    # The structure of the secrets should match the JSON key file.
-    creds = Credentials.from_service_account_info(
-        st.secrets["gcp_service_account"],
-        scopes=['https://www.googleapis.com/auth/drive.readonly']
-    )
+    creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=['https://www.googleapis.com/auth/drive.readonly'])
     service = build('drive', 'v3', credentials=creds)
     return service
 
-# Function to download and read a file from Google Drive into a pandas DataFrame
-def read_gdrive_file(file_id, service):
-    """Downloads a file from Google Drive and returns it as a pandas DataFrame."""
+def download_file_from_drive(file_id, service):
+    """Downloads a file from Google Drive into an in-memory byte buffer."""
     try:
         request = service.files().get_media(fileId=file_id)
-        # Use io.BytesIO to handle the downloaded byte stream
         file_bytes = io.BytesIO()
         downloader = MediaIoBaseDownload(file_bytes, request)
         done = False
-        while done is False:
+        while not done:
             status, done = downloader.next_chunk()
-        
-        # Once downloaded, reset the stream's position and read with pandas
         file_bytes.seek(0)
-        
-        # --- FIX for ENCODING ERROR ---
-        # Try reading with 'utf-8' first, if it fails, try 'latin1'
-        try:
-            df = pd.read_csv(file_bytes, encoding='utf-8')
-        except UnicodeDecodeError:
-            file_bytes.seek(0) # Reset buffer position again
-            df = pd.read_csv(file_bytes, encoding='latin1')
-        return df
-        
+        return file_bytes
     except Exception as e:
-        # Catch potential errors if the file ID is wrong or file is not shared
-        st.error(f"Error reading file with ID '{file_id}' from Google Drive.")
+        st.error(f"Error downloading file with ID '{file_id}' from Google Drive.")
         st.warning(f"Details: {e}")
         st.info("Please ensure the file ID is correct and you have shared the file with the service account email.")
         return None
+
+def read_gdrive_csv(file_bytes):
+    """Reads CSV data from a byte buffer."""
+    if file_bytes is None:
+        return None
+    parser_kwargs = {'engine': 'python', 'on_bad_lines': 'skip'}
+    try:
+        return pd.read_csv(file_bytes, encoding='utf-8', **parser_kwargs)
+    except UnicodeDecodeError:
+        file_bytes.seek(0)
+        return pd.read_csv(file_bytes, encoding='latin1', **parser_kwargs)
+
+def read_gdrive_parquet(file_bytes):
+    """Reads Parquet data from a byte buffer."""
+    if file_bytes is None:
+        return None
+    return pd.read_parquet(file_bytes)
 
 # --- P&L Calculation ---
 
@@ -77,7 +73,6 @@ def calculate_pnl(trades_df):
     pnl_per_asset = {}
     positions = {}
     
-    # Ensure 'timestamp' is a datetime object for sorting
     df = trades_df.copy()
     df['timestamp'] = pd.to_datetime(df['timestamp'])
     df = df.sort_values('timestamp').reset_index(drop=True)
@@ -101,9 +96,8 @@ def calculate_pnl(trades_df):
             positions[asset]['cost'] += quantity * price
             positions[asset]['quantity'] += quantity
         elif action == 'sell':
-            if positions[asset]['quantity'] > 0 and positions[asset]['cost'] is not None:
-                # Avoid division by zero if quantity is positive but cost is somehow None
-                avg_cost_per_unit = positions[asset]['cost'] / positions[asset]['quantity'] if positions[asset]['quantity'] > 0 else 0
+            if positions[asset]['quantity'] > 0:
+                avg_cost_per_unit = positions[asset]['cost'] / positions[asset]['quantity']
                 realized_pnl = (price - avg_cost_per_unit) * min(quantity, positions[asset]['quantity'])
                 pnl_per_asset[asset] += realized_pnl
                 total_cumulative_pnl += realized_pnl
@@ -116,67 +110,74 @@ def calculate_pnl(trades_df):
 
     return pnl_per_asset, df
 
-
 # --- Main App ---
-
 st.title("📈 Trading Bot Performance Dashboard")
 
-# --- Data Loading and Caching ---
-# Use caching to avoid re-downloading data on every interaction.
-@st.cache_data(ttl=600) # Cache for 10 minutes
+@st.cache_data(ttl=600)
 def load_data():
-    # Initialize the Google Drive service
     gdrive_service = get_gdrive_service()
-    
-    # If service fails to initialize (e.g., missing secrets), stop here.
     if gdrive_service is None:
         return None, None, None
 
-    # File IDs from your Google Drive links
     TRADES_FILE_ID = "1zSdFcG4Xlh_iSa180V6LRSeEucAokXYk"
     OHLC_FILE_ID = "1kxOB0PCGaT7N0Ljv4-EUDqYCnnTyd0SK"
     
-    # Load the data files
-    trades = read_gdrive_file(TRADES_FILE_ID, gdrive_service)
-    ohlc_data = read_gdrive_file(OHLC_FILE_ID, gdrive_service)
+    trades_bytes = download_file_from_drive(TRADES_FILE_ID, gdrive_service)
+    ohlc_bytes = download_file_from_drive(OHLC_FILE_ID, gdrive_service)
+
+    trades = read_gdrive_csv(trades_bytes)
+    ohlc_data = read_gdrive_parquet(ohlc_bytes)
     
-    # --- FIX for KeyError ---
-    # Standardize column names to prevent key errors (e.g. 'Asset' vs 'asset')
     if trades is not None:
+        # --- FIX for column mapping ---
+        trades = trades.rename(columns={
+            'product_id': 'asset',
+            'side': 'action',
+            'size': 'quantity'
+        })
         trades.columns = [col.lower().strip() for col in trades.columns]
+        if 'action' in trades.columns:
+            trades['action'] = trades['action'].str.lower()
+        
+        required_trade_cols = ['timestamp', 'asset', 'action', 'price', 'quantity']
+        if not all(col in trades.columns for col in required_trade_cols):
+            st.error(f"Trades file is missing required columns after mapping. Expected: {required_trade_cols}, Found: {list(trades.columns)}")
+            return None, None, ohlc_data
+
     if ohlc_data is not None:
         ohlc_data.columns = [col.lower().strip() for col in ohlc_data.columns]
-    
+        # **NEW**: Parquet often uses 'product_id' as well, so we map it here too.
+        if 'product_id' in ohlc_data.columns:
+             ohlc_data = ohlc_data.rename(columns={'product_id': 'asset'})
+        required_ohlc_cols = ['timestamp', 'asset', 'open', 'high', 'low', 'close']
+        if not all(col in ohlc_data.columns for col in required_ohlc_cols):
+            st.error(f"OHLC file is missing required columns after mapping. Expected: {required_ohlc_cols}, Found: {list(ohlc_data.columns)}")
+            return trades, None, None
+            
     if trades is not None:
         pnl_summary, trades_with_pnl = calculate_pnl(trades)
         return trades_with_pnl, pnl_summary, ohlc_data
     return pd.DataFrame(), {}, pd.DataFrame()
 
-
 trades_df, pnl_summary, ohlc_df = load_data()
 
-# --- Sidebar ---
 st.sidebar.header("Controls")
 st.sidebar.info("This dashboard visualizes trading performance using data from your Google Drive.")
 if st.sidebar.button('🔄 Refresh Data'):
     st.cache_data.clear()
     st.rerun()
 
-# --- Main App Logic (Proceed only if data is loaded) ---
-# Check if data loading was successful before trying to display anything
 if trades_df is not None and not trades_df.empty:
-    # --- P&L Summary Section ---
     st.subheader("Total P&L per Asset")
     if pnl_summary:
-        cols = st.columns(len(pnl_summary))
+        cols = st.columns(min(len(pnl_summary), 5))
         asset_names = sorted(pnl_summary.keys())
         for i, asset in enumerate(asset_names):
             pnl_value = pnl_summary.get(asset, 0)
-            with cols[i]:
+            with cols[i % 5]:
                 st.metric(label=asset, value=f"${pnl_value:,.2f}")
     st.markdown("---")
 
-    # --- Chart 1: Overall P&L Over Time ---
     st.subheader("Overall P&L Timeline")
     buys = trades_df[trades_df['action'] == 'buy']
     sells = trades_df[trades_df['action'] == 'sell']
@@ -188,18 +189,16 @@ if trades_df is not None and not trades_df.empty:
     st.plotly_chart(fig_pnl, use_container_width=True)
     st.markdown("---")
 
-    # --- Chart 2: Asset-Specific Candlestick Chart ---
     st.subheader("Asset-Specific Analysis")
     if ohlc_df is not None and 'asset' in ohlc_df.columns:
-        available_assets_ohlc = ohlc_df['asset'].unique()
+        available_assets_ohlc = sorted(ohlc_df['asset'].unique())
         selected_asset = st.selectbox('Select Asset', options=available_assets_ohlc, index=0)
 
         if selected_asset:
             asset_trades = trades_df[trades_df['asset'] == selected_asset]
-            asset_ohlc = ohlc_df[ohlc_df['asset'] == selected_asset].copy() # Use .copy() to avoid SettingWithCopyWarning
-            # Ensure timestamp columns are datetime objects for plotting
+            asset_ohlc = ohlc_df[ohlc_df['asset'] == selected_asset].copy()
+            
             asset_ohlc['timestamp'] = pd.to_datetime(asset_ohlc['timestamp'])
-            asset_trades = asset_trades.copy()
             asset_trades['timestamp'] = pd.to_datetime(asset_trades['timestamp'])
 
             fig_asset = go.Figure()
@@ -214,6 +213,4 @@ if trades_df is not None and not trades_df.empty:
             st.plotly_chart(fig_asset, use_container_width=True)
     elif ohlc_df is not None:
         st.warning("Could not process OHLC data. Ensure the Google Drive file is correct and contains an 'asset' column.")
-# The "else" case is implicitly handled by the error message inside get_gdrive_service now.
-# This prevents the app from showing the generic "Could not load data" if the specific error is missing secrets.
 
