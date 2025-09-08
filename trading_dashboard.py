@@ -247,40 +247,61 @@ if trades_df is not None and not trades_df.empty:
     st.subheader("Asset-Specific Analysis")
     if ohlc_df is not None and 'asset' in ohlc_df.columns:
         available_assets_ohlc = sorted(ohlc_df['asset'].unique())
-        selected_asset = st.selectbox('Select Asset', options=available_assets_ohlc, index=0)
+        
+        # Changed to st.multiselect
+        selected_assets = st.multiselect(
+            'Select Asset(s)', 
+            options=available_assets_ohlc, 
+            default=[available_assets_ohlc[0]] if available_assets_ohlc else []
+        )
 
-        if selected_asset:
-            asset_trades = trades_df[trades_df['asset'] == selected_asset]
-            asset_ohlc = ohlc_df[ohlc_df['asset'] == selected_asset].copy()
+        if selected_assets:
+            fig_asset = make_subplots(specs=[[[{"secondary_y": True}]]])
             
-            asset_ohlc['timestamp'] = pd.to_datetime(asset_ohlc['timestamp'])
-            asset_trades['timestamp'] = pd.to_datetime(asset_trades['timestamp'])
-
-            end_date = asset_ohlc['timestamp'].max() if not asset_ohlc.empty else datetime.now()
+            # Determine overall date range for selected assets
+            combined_ohlc_for_range = ohlc_df[ohlc_df['asset'].isin(selected_assets)]
+            end_date = combined_ohlc_for_range['timestamp'].max() if not combined_ohlc_for_range.empty else datetime.now()
             start_date = end_date - timedelta(days=30)
-            if not asset_ohlc.empty and start_date < asset_ohlc['timestamp'].min():
-                start_date = asset_ohlc['timestamp'].min()
+            if not combined_ohlc_for_range.empty and start_date < combined_ohlc_for_range['timestamp'].min():
+                start_date = combined_ohlc_for_range['timestamp'].min()
             
-            fig_asset = make_subplots(specs=[[{"secondary_y": True}]])
-            
-            if not asset_ohlc.empty:
-                fig_asset.add_trace(go.Candlestick(x=asset_ohlc['timestamp'], open=asset_ohlc['open'], high=asset_ohlc['high'], low=asset_ohlc['low'], close=asset_ohlc['close'], name='Candles'), secondary_y=False)
-            
-            fig_asset.add_trace(go.Scatter(x=asset_trades['timestamp'], y=asset_trades['asset_cumulative_pnl'], mode='lines', name='Asset P&L', line=dict(color='orange')), secondary_y=True)
+            # Loop through each selected asset and add its data to the chart
+            for selected_asset in selected_assets:
+                asset_trades = trades_df[trades_df['asset'] == selected_asset]
+                asset_ohlc = ohlc_df[ohlc_df['asset'] == selected_asset].copy()
+                
+                asset_ohlc['timestamp'] = pd.to_datetime(asset_ohlc['timestamp'])
+                asset_trades['timestamp'] = pd.to_datetime(asset_trades['timestamp'])
 
-            asset_buys = asset_trades[asset_trades['action'] == 'buy']
-            asset_sells = asset_trades[asset_trades['action'] == 'sell']
-            
-            fig_asset.add_trace(go.Scatter(x=asset_buys['timestamp'], y=asset_buys['price'], mode='markers', name='Buy', marker=dict(color='rgba(0, 255, 0, 0.9)', symbol='triangle-up', size=16, line=dict(width=2, color='DarkGreen'))), secondary_y=False)
-            fig_asset.add_trace(go.Scatter(x=asset_sells['timestamp'], y=asset_sells['price'], mode='markers', name='Sell', marker=dict(color='rgba(255, 0, 0, 0.9)', symbol='triangle-down', size=16, line=dict(width=2, color='DarkRed'))), secondary_y=False)
+                if not asset_ohlc.empty:
+                    fig_asset.add_trace(go.Candlestick(
+                        x=asset_ohlc['timestamp'], 
+                        open=asset_ohlc['open'], high=asset_ohlc['high'], 
+                        low=asset_ohlc['low'], close=asset_ohlc['close'], 
+                        name=f'{selected_asset} Candles'), 
+                        secondary_y=False
+                    )
+                
+                fig_asset.add_trace(go.Scatter(
+                    x=asset_trades['timestamp'], y=asset_trades['asset_cumulative_pnl'], 
+                    mode='lines', name=f'{selected_asset} P&L'), 
+                    secondary_y=True
+                )
 
-            for _, trade in asset_buys.iterrows():
-                fig_asset.add_shape(type="line", x0=trade['timestamp'], y0=0, x1=trade['timestamp'], y1=1, yref='paper', line=dict(color="rgba(0, 255, 0, 0.5)", width=1, dash="dash"))
+                asset_buys = asset_trades[asset_trades['action'] == 'buy']
+                asset_sells = asset_trades[asset_trades['action'] == 'sell']
+                
+                fig_asset.add_trace(go.Scatter(x=asset_buys['timestamp'], y=asset_buys['price'], mode='markers', name=f'{selected_asset} Buy', marker=dict(color='rgba(0, 255, 0, 0.9)', symbol='triangle-up', size=16, line=dict(width=2, color='DarkGreen'))), secondary_y=False)
+                fig_asset.add_trace(go.Scatter(x=asset_sells['timestamp'], y=asset_sells['price'], mode='markers', name=f'{selected_asset} Sell', marker=dict(color='rgba(255, 0, 0, 0.9)', symbol='triangle-down', size=16, line=dict(width=2, color='DarkRed'))), secondary_y=False)
 
-            for _, trade in asset_sells.iterrows():
-                fig_asset.add_shape(type="line", x0=trade['timestamp'], y0=0, x1=trade['timestamp'], y1=1, yref='paper', line=dict(color="rgba(255, 0, 0, 0.5)", width=1, dash="dash"))
+                for _, trade in asset_buys.iterrows():
+                    fig_asset.add_shape(type="line", x0=trade['timestamp'], y0=0, x1=trade['timestamp'], y1=1, yref='paper', line=dict(color="rgba(0, 255, 0, 0.5)", width=1, dash="dash"))
 
-            fig_asset.update_layout(title=f'Price History and Trades for {selected_asset}', template='plotly_white', xaxis_rangeslider_visible=True, xaxis_range=[start_date, end_date])
+                for _, trade in asset_sells.iterrows():
+                    fig_asset.add_shape(type="line", x0=trade['timestamp'], y0=0, x1=trade['timestamp'], y1=1, yref='paper', line=dict(color="rgba(255, 0, 0, 0.5)", width=1, dash="dash"))
+
+            title_text = f'Price History and Trades for {", ".join(selected_assets)}'
+            fig_asset.update_layout(title=title_text, template='plotly_white', xaxis_rangeslider_visible=True, xaxis_range=[start_date, end_date], legend_title_text="Assets")
             fig_asset.update_yaxes(title_text="Price (USD)", secondary_y=False)
             fig_asset.update_yaxes(title_text="P&L (USD)", secondary_y=True, showgrid=False)
 
