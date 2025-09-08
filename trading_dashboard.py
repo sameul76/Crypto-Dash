@@ -362,36 +362,44 @@ if trades_df is not None and not trades_df.empty:
                 filtered_trades = asset_trades[mask_trd].copy()
 
                 if not filtered_ohlc.empty:
-                    # ---------- Candlestick: strict, version-safe ----------
+                    # ---------- Candlestick: max compatibility ----------
                     def find_col(candidates, cols):
                         for c in candidates:
-                            if c in cols:
-                                return c
+                            if c in cols: return c
                         return None
 
                     ohlc = filtered_ohlc.copy()
                     ohlc["timestamp"] = pd.to_datetime(ohlc["timestamp"], errors="coerce")
                     for c in ["open","high","low","close"]:
                         ohlc[c] = pd.to_numeric(ohlc[c], errors="coerce")
-
-                    # Drop rows that break plotting and reset index
                     ohlc = ohlc.dropna(subset=["timestamp","open","high","low","close"]).reset_index(drop=True)
 
-                    # Tolerant P-Up / P-Down detection
                     cols_lower = set(ohlc.columns.str.lower())
                     colmap = {c.lower(): c for c in ohlc.columns}
                     p_up_key   = find_col(["p_up","p-up","pup","puprob","p_up_prob","puprobability"], cols_lower)
                     p_down_key = find_col(["p_down","p-down","pdown","pdownprob","p_down_prob","pdownprobability"], cols_lower)
 
-                    def fmt_series(key):
+                    def pull_series(key):
                         if key is None or colmap.get(key) not in ohlc.columns:
-                            return ["—"] * len(ohlc)
-                        s = ohlc[colmap[key]]
-                        return [f"{float(v):.4f}" if pd.notna(v) else "—" for v in s]
+                            return [None] * len(ohlc)
+                        return list(ohlc[colmap[key]])
 
-                    pu_str = fmt_series(p_up_key)
-                    pd_str = fmt_series(p_down_key)
-                    customdata = np.column_stack([pu_str, pd_str])
+                    pu_raw = pull_series(p_up_key)
+                    pd_raw = pull_series(p_down_key)
+
+                    # Build a safe HTML tooltip per row
+                    def fmt(v): 
+                        return f"{float(v):.4f}" if v is not None and pd.notna(v) else "—"
+                    hovertext = [
+                        "📅 " + ohlc.loc[i, "timestamp"].strftime("%Y-%m-%d %H:%M:%S") +
+                        f"<br>Open: ${float(ohlc.loc[i,'open']):.4f}" +
+                        f"<br>High: ${float(ohlc.loc[i,'high']):.4f}" +
+                        f"<br>Low: ${float(ohlc.loc[i,'low']):.4f}" +
+                        f"<br>Close: ${float(ohlc.loc[i,'close']):.4f}" +
+                        f"<br>P-Up: {fmt(pu_raw[i])}" +
+                        f"<br>P-Down: {fmt(pd_raw[i])}"
+                        for i in range(len(ohlc))
+                    ]
 
                     fig_asset.add_trace(
                         go.Candlestick(
@@ -401,18 +409,8 @@ if trades_df is not None and not trades_df.empty:
                             low=ohlc["low"],
                             close=ohlc["close"],
                             name="Price",
-                            increasing=dict(line=dict(color="#10b981")),  # ✅ supported widely
-                            decreasing=dict(line=dict(color="#ef4444")),  # ✅ supported widely
-                            customdata=customdata,
-                            hovertemplate=(
-                                "📅 %{x|%Y-%m-%d %H:%M:%S}<br>"
-                                "Open: $%{open:.4f}<br>"
-                                "High: $%{high:.4f}<br>"
-                                "Low: $%{low:.4f}<br>"
-                                "Close: $%{close:.4f}<br>"
-                                "P-Up: %{customdata[0]}<br>"
-                                "P-Down: %{customdata[1]}<extra></extra>"
-                            ),
+                            text=hovertext,           # prebuilt HTML
+                            hoverinfo="text"          # show only our text (max compatibility)
                         ),
                         secondary_y=False
                     )
