@@ -216,14 +216,13 @@ if summary_stats:
 # --- Main Content ---
 if trades_df is not None and not trades_df.empty:
     
-    # New KPI Section
     if summary_stats:
         st.subheader("Key Performance Indicators")
         kpi_cols = st.columns(2)
         kpi_cols[0].metric("Win Rate", f"{summary_stats['win_rate']:.2f}%")
         kpi_cols[1].metric("Total Closed Trades", f"{summary_stats['total_trades']:,}")
         st.markdown("---")
-
+    
     st.subheader("Total P&L per Asset")
     if pnl_summary:
         cols = st.columns(min(len(pnl_summary), 5))
@@ -257,13 +256,16 @@ if trades_df is not None and not trades_df.empty:
             asset_ohlc['timestamp'] = pd.to_datetime(asset_ohlc['timestamp'])
             asset_trades['timestamp'] = pd.to_datetime(asset_trades['timestamp'])
 
-            end_date = asset_ohlc['timestamp'].max()
+            end_date = asset_ohlc['timestamp'].max() if not asset_ohlc.empty else datetime.now()
             start_date = end_date - timedelta(days=30)
-            if start_date < asset_ohlc['timestamp'].min():
+            if not asset_ohlc.empty and start_date < asset_ohlc['timestamp'].min():
                 start_date = asset_ohlc['timestamp'].min()
             
             fig_asset = make_subplots(specs=[[{"secondary_y": True}]])
-            fig_asset.add_trace(go.Candlestick(x=asset_ohlc['timestamp'], open=asset_ohlc['open'], high=asset_ohlc['high'], low=asset_ohlc['low'], close=asset_ohlc['close'], name='Candles'), secondary_y=False)
+            
+            if not asset_ohlc.empty:
+                fig_asset.add_trace(go.Candlestick(x=asset_ohlc['timestamp'], open=asset_ohlc['open'], high=asset_ohlc['high'], low=asset_ohlc['low'], close=asset_ohlc['close'], name='Candles'), secondary_y=False)
+            
             fig_asset.add_trace(go.Scatter(x=asset_trades['timestamp'], y=asset_trades['asset_cumulative_pnl'], mode='lines', name='Asset P&L', line=dict(color='orange')), secondary_y=True)
 
             asset_buys = asset_trades[asset_trades['action'] == 'buy']
