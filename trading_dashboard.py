@@ -636,6 +636,20 @@ if trades_df is not None and not trades_df.empty:
                     # Check if p-up and p-down columns exist
                     has_p_values = 'p-up' in filtered_ohlc.columns and 'p-down' in filtered_ohlc.columns
                     
+                    # Create custom hover text like in the reference code
+                    if has_p_values:
+                        hover_text = [
+                            f"Open: ${row.open:.4f}<br>High: ${row.high:.4f}<br>Low: ${row.low:.4f}<br>Close: ${row.close:.4f}<br>" +
+                            (f"<b>P-Up: {getattr(row, 'p-up', 0):.4f}</b><br><b>P-Down: {getattr(row, 'p-down', 0):.4f}</b>" 
+                             if pd.notna(getattr(row, 'p-up', None)) else "No probability data")
+                            for index, row in filtered_ohlc.iterrows()
+                        ]
+                    else:
+                        hover_text = [
+                            f"Open: ${row.open:.4f}<br>High: ${row.high:.4f}<br>Low: ${row.low:.4f}<br>Close: ${row.close:.4f}"
+                            for index, row in filtered_ohlc.iterrows()
+                        ]
+                    
                     fig_asset.add_trace(go.Candlestick(
                         x=filtered_ohlc['timestamp'],
                         open=filtered_ohlc['open'],
@@ -646,25 +660,10 @@ if trades_df is not None and not trades_df.empty:
                         increasing_line_color='#10b981',
                         decreasing_line_color='#ef4444',
                         increasing_fillcolor='rgba(16, 185, 129, 0.3)',
-                        decreasing_fillcolor='rgba(239, 68, 68, 0.3)'
+                        decreasing_fillcolor='rgba(239, 68, 68, 0.3)',
+                        hoverinfo="x+text",
+                        hovertext=hover_text
                     ), secondary_y=False)
-                    
-                    # Add p-up and p-down as separate scatter traces if they exist
-                    if has_p_values:
-                        # Add invisible scatter points for p-up values
-                        fig_asset.add_trace(go.Scatter(
-                            x=filtered_ohlc['timestamp'],
-                            y=filtered_ohlc['high'] * 1.001,  # Slightly above high
-                            mode='markers',
-                            marker=dict(size=1, opacity=0),
-                            name='P-Values',
-                            customdata=list(zip(filtered_ohlc['p-up'], filtered_ohlc['p-down'])),
-                            hovertemplate='<b>%{x}</b><br>' +
-                                        'P-Up: %{customdata[0]:,.4f}<br>' +
-                                        'P-Down: %{customdata[1]:,.4f}<br>' +
-                                        '<extra></extra>',
-                            showlegend=False
-                        ), secondary_y=False)
                 
                 # P&L line
                 if not filtered_trades.empty:
