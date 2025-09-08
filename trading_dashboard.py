@@ -574,14 +574,13 @@ if trades_df is not None and not trades_df.empty:
 
 else:
     st.error("No trading data available. Please check your data connection.")
-    st.info("Ensure your Google Drive files are properly configured and accessible.")
+    st.info("Make sure your Google Drive files are properly configured and accessible.")
 
 # Professional footer
+st.markdown("---")
 st.markdown("""
-<div style="text-align: center; margin-top: 4rem; padding: 2rem; 
-            border-top: 1px solid #e2e8f0; color: #718096;">
-    <p style="margin: 0; font-family: 'Inter', sans-serif;">
-        Trading Performance Analytics Dashboard • Professional Portfolio Management
-    </p>
+<div style="text-align: center; opacity: 0.6; padding: 2rem; font-family: 'Inter', sans-serif;">
+    <p style="margin: 0; color: #6b7280;">Professional Trading Analytics Dashboard</p>
+    <p style="margin: 0; font-size: 0.8rem; color: #9ca3af;">Real-time Portfolio Performance & Risk Management</p>
 </div>
 """, unsafe_allow_html=True)
