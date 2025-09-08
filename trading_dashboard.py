@@ -129,7 +129,6 @@ def load_data():
     ohlc_data = read_gdrive_parquet(ohlc_bytes)
     
     if trades is not None:
-        # --- FIX for column mapping ---
         trades = trades.rename(columns={
             'product_id': 'asset',
             'side': 'action',
@@ -146,7 +145,6 @@ def load_data():
 
     if ohlc_data is not None:
         ohlc_data.columns = [col.lower().strip() for col in ohlc_data.columns]
-        # **NEW**: Parquet often uses 'product_id' as well, so we map it here too.
         if 'product_id' in ohlc_data.columns:
              ohlc_data = ohlc_data.rename(columns={'product_id': 'asset'})
         required_ohlc_cols = ['timestamp', 'asset', 'open', 'high', 'low', 'close']
@@ -201,16 +199,45 @@ if trades_df is not None and not trades_df.empty:
             asset_ohlc['timestamp'] = pd.to_datetime(asset_ohlc['timestamp'])
             asset_trades['timestamp'] = pd.to_datetime(asset_trades['timestamp'])
 
+            # Set an initial zoom window (e.g., last 30 days)
+            end_date = asset_ohlc['timestamp'].max()
+            start_date = end_date - timedelta(days=30)
+            if start_date < asset_ohlc['timestamp'].min():
+                start_date = asset_ohlc['timestamp'].min()
+
             fig_asset = go.Figure()
             fig_asset.add_trace(go.Candlestick(x=asset_ohlc['timestamp'], open=asset_ohlc['open'], high=asset_ohlc['high'], low=asset_ohlc['low'], close=asset_ohlc['close'], name='Candles'))
             
             asset_buys = asset_trades[asset_trades['action'] == 'buy']
             asset_sells = asset_trades[asset_trades['action'] == 'sell']
+            
             fig_asset.add_trace(go.Scatter(x=asset_buys['timestamp'], y=asset_buys['price'], mode='markers', name='Buy', marker=dict(color='rgba(0, 255, 0, 0.9)', symbol='triangle-up', size=12, line=dict(width=2, color='DarkGreen'))))
             fig_asset.add_trace(go.Scatter(x=asset_sells['timestamp'], y=asset_sells['price'], mode='markers', name='Sell', marker=dict(color='rgba(255, 0, 0, 0.9)', symbol='triangle-down', size=12, line=dict(width=2, color='DarkRed'))))
 
-            fig_asset.update_layout(title=f'Price History and Trades for {selected_asset}', xaxis_title='Date', yaxis_title='Price (USD)', template='plotly_white', xaxis_rangeslider_visible=True)
+            # Add vertical lines for trades to improve visibility
+            for _, trade in asset_buys.iterrows():
+                fig_asset.add_shape(type="line",
+                                    x0=trade['timestamp'], y0=0, x1=trade['timestamp'], y1=1,
+                                    yref='paper',
+                                    line=dict(color="rgba(0, 255, 0, 0.5)", width=1, dash="dash"))
+
+            for _, trade in asset_sells.iterrows():
+                fig_asset.add_shape(type="line",
+                                    x0=trade['timestamp'], y0=0, x1=trade['timestamp'], y1=1,
+                                    yref='paper',
+                                    line=dict(color="rgba(255, 0, 0, 0.5)", width=1, dash="dash"))
+
+            fig_asset.update_layout(
+                title=f'Price History and Trades for {selected_asset}',
+                xaxis_title='Date',
+                yaxis_title='Price (USD)',
+                template='plotly_white',
+                xaxis_rangeslider_visible=True,
+                xaxis_range=[start_date, end_date] # Apply the initial zoom
+            )
             st.plotly_chart(fig_asset, use_container_width=True)
+            st.info("💡 **Tip:** To scroll through history, drag the middle of the range slider at the bottom of the chart.")
+
     elif ohlc_df is not None:
         st.warning("Could not process OHLC data. Ensure the Google Drive file is correct and contains an 'asset' column.")
 
