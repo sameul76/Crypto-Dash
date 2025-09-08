@@ -264,7 +264,7 @@ if trades_df is not None and not trades_df.empty:
                 if not asset_ohlc.empty and start_date < asset_ohlc['timestamp'].min():
                     start_date = asset_ohlc['timestamp'].min()
                 
-                fig_asset = make_subplots(specs=[[[{"secondary_y": True}]]])
+                fig_asset = make_subplots(specs=[[{"secondary_y": True}]])
                 
                 if not asset_ohlc.empty:
                     fig_asset.add_trace(go.Candlestick(x=asset_ohlc['timestamp'], open=asset_ohlc['open'], high=asset_ohlc['high'], low=asset_ohlc['low'], close=asset_ohlc['close'], name='Candles'), secondary_y=False)
@@ -292,4 +292,5 @@ if trades_df is not None and not trades_df.empty:
 
     elif ohlc_df is not None:
         st.warning("Could not process OHLC data. Ensure the Google Drive file is correct and contains an 'asset' column.")
+
 
