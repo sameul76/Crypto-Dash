@@ -535,15 +535,30 @@ if trades_df is not None and not trades_df.empty:
     st.markdown('<h2 class="section-title">Asset Analysis</h2>', unsafe_allow_html=True)
     
     if ohlc_df is not None and 'asset' in ohlc_df.columns:
-        available_assets_ohlc = sorted(ohlc_df['asset'].unique())
+        # Check for specific CVX assets
+        available_assets = ohlc_df['asset'].unique()
+        cvx_options = []
+        
+        if 'CVX_1min' in available_assets:
+            cvx_options.append(('1 min CVX', 'CVX_1min'))
+        if 'CVX_5min' in available_assets:
+            cvx_options.append(('5 min CVX', 'CVX_5min'))
+        
+        # If CVX assets not found, fall back to all assets
+        if not cvx_options:
+            cvx_options = [(asset, asset) for asset in sorted(available_assets)]
         
         col1, col2 = st.columns([3, 1])
         with col1:
-            selected_asset = st.selectbox(
-                'Select Asset', 
-                options=available_assets_ohlc, 
+            # Display friendly names but use actual asset names for data
+            display_options = [option[0] for option in cvx_options]
+            selected_display = st.selectbox(
+                'Select CVX Timeframe', 
+                options=display_options, 
                 index=0
             )
+            # Get the actual asset name
+            selected_asset = next(option[1] for option in cvx_options if option[0] == selected_display)
         with col2:
             time_range = st.selectbox(
                 'Time Range',
