@@ -14,66 +14,123 @@ from googleapiclient.http import MediaIoBaseDownload
 
 # --- Configuration ---
 st.set_page_config(
-    page_title="🚀 Trading Bot Performance",
+    page_title="Trading Performance Analytics",
     layout="wide",
     initial_sidebar_state="expanded",
     menu_items={
-        'About': "Advanced Trading Bot Performance Dashboard"
+        'About': "Professional Trading Performance Dashboard"
     }
 )
 
-# Custom CSS for modern styling
+# Custom CSS for professional modern styling
 st.markdown("""
 <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+    
     .main-header {
         text-align: center;
-        padding: 2rem 0;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        padding: 3rem 2rem;
+        background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
         color: white;
-        border-radius: 15px;
-        margin-bottom: 2rem;
-        box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+        border-radius: 20px;
+        margin-bottom: 3rem;
+        box-shadow: 0 20px 60px rgba(30, 60, 114, 0.3);
+        position: relative;
+        overflow: hidden;
     }
     
-    .metric-card {
-        background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-        padding: 1.5rem;
-        border-radius: 15px;
-        color: white;
-        text-align: center;
-        margin: 0.5rem 0;
-        box-shadow: 0 8px 25px rgba(0,0,0,0.1);
-        transition: transform 0.3s ease;
+    .main-header::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: linear-gradient(45deg, rgba(255,255,255,0.1) 0%, transparent 50%);
+        pointer-events: none;
     }
     
-    .metric-card:hover {
-        transform: translateY(-5px);
+    .main-header h1 {
+        font-family: 'Inter', sans-serif;
+        font-weight: 700;
+        font-size: 2.5rem;
+        margin: 0;
+        text-shadow: 0 2px 10px rgba(0,0,0,0.3);
     }
     
-    .profit-card {
-        background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+    .main-header p {
+        font-family: 'Inter', sans-serif;
+        font-weight: 300;
+        margin: 0.5rem 0 0 0;
+        opacity: 0.9;
     }
     
-    .loss-card {
-        background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);
+    .professional-section {
+        background: rgba(255, 255, 255, 0.8);
+        backdrop-filter: blur(20px);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        border-radius: 16px;
+        padding: 2rem;
+        margin: 2rem 0;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
     }
     
-    .neutral-card {
-        background: linear-gradient(135deg, #a8edea 0%, #fed6e3 100%);
-    }
-    
-    .sidebar .sidebar-content {
-        background: linear-gradient(180deg, #2c3e50 0%, #3498db 100%);
+    .section-title {
+        font-family: 'Inter', sans-serif;
+        font-weight: 600;
+        font-size: 1.5rem;
+        color: #1e3c72;
+        margin-bottom: 1.5rem;
+        padding-bottom: 0.5rem;
+        border-bottom: 2px solid #e8f4f8;
     }
     
     .stSelectbox > div > div {
-        background-color: rgba(255,255,255,0.1);
-        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.9);
+        border: 1px solid rgba(30, 60, 114, 0.2);
+        border-radius: 12px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        transition: all 0.3s ease;
+    }
+    
+    .stSelectbox > div > div:hover {
+        border-color: #1e3c72;
+        box-shadow: 0 6px 20px rgba(30, 60, 114, 0.2);
+    }
+    
+    .main .block-container {
+        padding-top: 2rem;
+        padding-bottom: 2rem;
+    }
+    
+    /* Sidebar styling */
+    .css-1d391kg {
+        background: linear-gradient(180deg, #f8fafc 0%, #e2e8f0 100%);
+    }
+    
+    [data-testid="stSidebar"] > div:first-child {
+        background: linear-gradient(180deg, #1e3c72 0%, #2a5298 100%);
+    }
+    
+    /* Professional metrics in sidebar */
+    .sidebar-metric {
+        background: rgba(255, 255, 255, 0.1);
+        padding: 1rem;
+        border-radius: 12px;
+        margin: 0.5rem 0;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        backdrop-filter: blur(10px);
+        transition: all 0.3s ease;
+    }
+    
+    .sidebar-metric:hover {
+        background: rgba(255, 255, 255, 0.15);
+        transform: translateY(-2px);
     }
 </style>
 """, unsafe_allow_html=True)
 
-# --- Google Drive Data Loading (same as before) ---
+# --- Google Drive Data Loading ---
 def get_gdrive_service():
     """Initializes the Google Drive API service using Streamlit's secrets."""
     if "gcp_service_account" not in st.secrets:
@@ -118,7 +175,7 @@ def read_gdrive_parquet(file_bytes):
         return None
     return pd.read_parquet(file_bytes)
 
-# --- P&L and Metrics Calculation (same as before) ---
+# --- P&L and Metrics Calculation ---
 def calculate_pnl_and_metrics(trades_df):
     """Calculates per-asset P&L, a running total P&L, and performance metrics."""
     if trades_df is None or trades_df.empty:
@@ -200,11 +257,11 @@ def calculate_pnl_and_metrics(trades_df):
     return pnl_per_asset, df, summary_stats
 
 # --- Main App ---
-# Cool animated header
+# Professional header
 st.markdown("""
 <div class="main-header">
-    <h1>🚀 Elite Trading Bot Dashboard</h1>
-    <p style="font-size: 1.2em; opacity: 0.9;">Real-time Performance Analytics & Intelligence</p>
+    <h1>Trading Performance Analytics</h1>
+    <p style="font-size: 1.1em;">Professional Portfolio Management Dashboard</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -252,156 +309,167 @@ trades_df, pnl_summary, ohlc_df, summary_stats = load_data()
 
 # --- Enhanced Sidebar ---
 with st.sidebar:
-    st.markdown("## 🎛️ Control Center")
+    st.markdown("## Portfolio Control")
     
     # Auto-refresh toggle
-    auto_refresh = st.toggle("🔄 Auto-refresh (5min)", value=False)
+    auto_refresh = st.toggle("Auto-refresh (5min)", value=False)
     if auto_refresh:
         st.rerun()
     
-    if st.button('🔄 Manual Refresh', type="primary"):
+    if st.button('Refresh Data', type="primary"):
         st.cache_data.clear()
         st.rerun()
     
     st.markdown("---")
     
     if pnl_summary:
-        st.markdown("## 💰 Portfolio Overview")
+        st.markdown("## Portfolio Summary")
         total_pnl = sum(pnl_summary.values())
         
-        # Dynamic styling based on P&L
+        # Professional P&L display
         if total_pnl > 0:
-            pnl_color = "#00ff88"
-            pnl_emoji = "📈"
+            pnl_color = "#10b981"
+            pnl_bg = "rgba(16, 185, 129, 0.1)"
+            pnl_emoji = "↗"
         elif total_pnl < 0:
-            pnl_color = "#ff4757"
-            pnl_emoji = "📉"
+            pnl_color = "#ef4444" 
+            pnl_bg = "rgba(239, 68, 68, 0.1)"
+            pnl_emoji = "↘"
         else:
-            pnl_color = "#ffa502"
-            pnl_emoji = "➖"
+            pnl_color = "#6b7280"
+            pnl_bg = "rgba(107, 114, 128, 0.1)"
+            pnl_emoji = "→"
         
         st.markdown(f"""
-        <div style="background: linear-gradient(135deg, {pnl_color}20, {pnl_color}10); 
-                    padding: 1rem; border-radius: 10px; text-align: center; margin-bottom: 1rem;">
-            <h3 style="margin: 0; color: {pnl_color};">{pnl_emoji} ${total_pnl:,.2f}</h3>
-            <p style="margin: 0; opacity: 0.8;">Total Portfolio P&L</p>
+        <div class="sidebar-metric" style="background: {pnl_bg}; border-color: {pnl_color};">
+            <div style="display: flex; align-items: center; justify-content: space-between;">
+                <span style="font-size: 0.9rem; opacity: 0.8;">Total P&L</span>
+                <span style="font-size: 1.2rem;">{pnl_emoji}</span>
+            </div>
+            <div style="font-size: 1.4rem; font-weight: 600; color: {pnl_color}; margin-top: 0.3rem;">
+                ${total_pnl:,.2f}
+            </div>
         </div>
         """, unsafe_allow_html=True)
         
-        st.markdown("### 📊 Asset Breakdown")
+        st.markdown("### Asset Allocation")
         for asset, pnl in sorted(pnl_summary.items(), key=lambda x: x[1], reverse=True):
-            color = "#00ff88" if pnl >= 0 else "#ff4757"
+            color = "#10b981" if pnl >= 0 else "#ef4444"
+            bg_color = "rgba(16, 185, 129, 0.1)" if pnl >= 0 else "rgba(239, 68, 68, 0.1)"
+            
             st.markdown(f"""
-            <div style="background: {color}20; padding: 0.5rem; border-radius: 8px; margin: 0.3rem 0;">
-                <strong>{asset}:</strong> <span style="color: {color};">${pnl:,.2f}</span>
+            <div class="sidebar-metric" style="background: {bg_color}; border-color: {color};">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <span style="font-weight: 500; font-size: 0.9rem;">{asset}</span>
+                    <span style="color: {color}; font-weight: 600;">${pnl:,.2f}</span>
+                </div>
             </div>
             """, unsafe_allow_html=True)
     
     if summary_stats:
         st.markdown("---")
-        st.markdown("## 📈 Performance Metrics")
+        st.markdown("## Key Metrics")
         
-        # Win rate with progress bar
+        # Professional metrics display
         win_rate = summary_stats['win_rate']
-        st.markdown(f"**Win Rate:** {win_rate:.1f}%")
-        st.progress(win_rate / 100)
+        st.markdown(f"""
+        <div class="sidebar-metric">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <span style="font-size: 0.9rem;">Win Rate</span>
+                <span style="font-weight: 600; color: white;">{win_rate:.1f}%</span>
+            </div>
+            <div style="background: rgba(255,255,255,0.2); border-radius: 8px; height: 6px; margin-top: 0.5rem;">
+                <div style="background: #10b981; height: 6px; border-radius: 8px; width: {win_rate}%;"></div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
         
-        st.metric("🎯 Total Trades", f"{summary_stats['total_trades']:,}")
-        st.metric("💸 Max Drawdown", f"${summary_stats['max_drawdown']:,.2f}")
+        st.markdown(f"""
+        <div class="sidebar-metric">
+            <div style="display: flex; justify-content: space-between;">
+                <span style="font-size: 0.9rem;">Total Trades</span>
+                <span style="font-weight: 600; color: white;">{summary_stats['total_trades']:,}</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        st.markdown(f"""
+        <div class="sidebar-metric">
+            <div style="display: flex; justify-content: space-between;">
+                <span style="font-size: 0.9rem;">Max Drawdown</span>
+                <span style="font-weight: 600; color: #ef4444;">${summary_stats['max_drawdown']:,.2f}</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
         
         if summary_stats['profit_factor'] != float('inf'):
-            st.metric("⚖️ Profit Factor", f"{summary_stats['profit_factor']:.2f}")
+            pf_color = "#10b981" if summary_stats['profit_factor'] > 1 else "#ef4444"
+            st.markdown(f"""
+            <div class="sidebar-metric">
+                <div style="display: flex; justify-content: space-between;">
+                    <span style="font-size: 0.9rem;">Profit Factor</span>
+                    <span style="font-weight: 600; color: {pf_color};">{summary_stats['profit_factor']:.2f}</span>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
 
 # --- Main Content ---
 if trades_df is not None and not trades_df.empty:
     
-    # Enhanced P&L metrics cards
-    st.markdown("## 💎 Asset Performance Overview")
-    if pnl_summary:
-        # Create dynamic columns based on number of assets
-        num_assets = len(pnl_summary)
-        cols_per_row = min(num_assets, 4)
-        
-        for i in range(0, num_assets, cols_per_row):
-            cols = st.columns(cols_per_row)
-            asset_slice = list(pnl_summary.items())[i:i+cols_per_row]
-            
-            for j, (asset, pnl_value) in enumerate(asset_slice):
-                with cols[j]:
-                    # Determine card style based on P&L
-                    if pnl_value > 0:
-                        card_class = "profit-card"
-                        emoji = "🟢"
-                    elif pnl_value < 0:
-                        card_class = "loss-card"
-                        emoji = "🔴"
-                    else:
-                        card_class = "neutral-card"
-                        emoji = "🟡"
-                    
-                    st.markdown(f"""
-                    <div class="metric-card {card_class}">
-                        <h3 style="margin: 0;">{emoji} {asset}</h3>
-                        <h2 style="margin: 0.5rem 0;">${pnl_value:,.2f}</h2>
-                        <p style="margin: 0; opacity: 0.9;">Total P&L</p>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-    st.markdown("---")
-
-    # Enhanced P&L Timeline with better styling
-    st.markdown("## 🌊 P&L Flow Visualization")
+    # Enhanced P&L Timeline with professional styling
+    st.markdown('<div class="professional-section">', unsafe_allow_html=True)
+    st.markdown('<h2 class="section-title">Portfolio Performance Timeline</h2>', unsafe_allow_html=True)
     
     buys = trades_df[trades_df['action'] == 'buy']
     sells = trades_df[trades_df['action'] == 'sell']
     
     fig_pnl = go.Figure()
     
-    # Main P&L line with gradient fill
+    # Main P&L line with professional styling
     fig_pnl.add_trace(go.Scatter(
         x=trades_df['timestamp'], 
         y=trades_df['cumulative_pnl'], 
         mode='lines',
         name='Cumulative P&L',
-        line=dict(color='#00d4ff', width=3),
+        line=dict(color='#1e3c72', width=3),
         fill='tonexty',
-        fillcolor='rgba(0, 212, 255, 0.1)'
+        fillcolor='rgba(30, 60, 114, 0.1)'
     ))
     
-    # Buy markers with custom styling
+    # Buy markers with professional styling
     fig_pnl.add_trace(go.Scatter(
         x=buys['timestamp'], 
         y=buys['cumulative_pnl'], 
         mode='markers',
         name='Buy Orders',
         marker=dict(
-            color='#00ff88',
+            color='#10b981',
             symbol='triangle-up',
-            size=12,
-            line=dict(width=2, color='#00cc66')
+            size=10,
+            line=dict(width=2, color='#059669')
         ),
         hovertemplate='<b>BUY</b><br>Date: %{x}<br>P&L: $%{y:,.2f}<extra></extra>'
     ))
     
-    # Sell markers with custom styling
+    # Sell markers with professional styling
     fig_pnl.add_trace(go.Scatter(
         x=sells['timestamp'], 
         y=sells['cumulative_pnl'], 
         mode='markers',
         name='Sell Orders',
         marker=dict(
-            color='#ff4757',
+            color='#ef4444',
             symbol='triangle-down',
-            size=12,
-            line=dict(width=2, color='#cc3644')
+            size=10,
+            line=dict(width=2, color='#dc2626')
         ),
         hovertemplate='<b>SELL</b><br>Date: %{x}<br>P&L: $%{y:,.2f}<extra></extra>'
     ))
     
     fig_pnl.update_layout(
         title=dict(
-            text='💰 Cumulative P&L Journey',
-            font=dict(size=24, color='#2c3e50')
+            text='Cumulative P&L Performance',
+            font=dict(size=20, color='#1e3c72', family='Inter')
         ),
         xaxis_title='Timeline',
         yaxis_title='P&L (USD)',
@@ -411,31 +479,36 @@ if trades_df is not None and not trades_df.empty:
             orientation="h",
             yanchor="bottom",
             y=1.02,
-            xanchor="right",
-            x=1
+            xanchor="center",
+            x=0.5,
+            font=dict(family='Inter')
         ),
         xaxis=dict(
             rangeslider=dict(visible=True),
             type="date",
             showgrid=True,
-            gridcolor='rgba(0,0,0,0.1)'
+            gridcolor='rgba(30, 60, 114, 0.1)',
+            title_font=dict(family='Inter')
         ),
         yaxis=dict(
             showgrid=True,
-            gridcolor='rgba(0,0,0,0.1)',
+            gridcolor='rgba(30, 60, 114, 0.1)',
             zeroline=True,
-            zerolinecolor='rgba(0,0,0,0.3)',
-            zerolinewidth=2
+            zerolinecolor='rgba(30, 60, 114, 0.3)',
+            zerolinewidth=2,
+            title_font=dict(family='Inter')
         ),
-        plot_bgcolor='rgba(0,0,0,0)',
-        paper_bgcolor='rgba(0,0,0,0)'
+        plot_bgcolor='rgba(248, 250, 252, 0.8)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(family='Inter')
     )
     
     st.plotly_chart(fig_pnl, use_container_width=True)
-    st.markdown("---")
+    st.markdown('</div>', unsafe_allow_html=True)
 
     # Enhanced Asset Analysis
-    st.markdown("## 🔍 Deep Asset Analysis")
+    st.markdown('<div class="professional-section">', unsafe_allow_html=True)
+    st.markdown('<h2 class="section-title">Asset Analysis</h2>', unsafe_allow_html=True)
     
     if ohlc_df is not None and 'asset' in ohlc_df.columns:
         available_assets_ohlc = sorted(ohlc_df['asset'].unique())
@@ -443,13 +516,13 @@ if trades_df is not None and not trades_df.empty:
         col1, col2 = st.columns([3, 1])
         with col1:
             selected_asset = st.selectbox(
-                '🎯 Select Asset for Analysis', 
+                'Select Asset', 
                 options=available_assets_ohlc, 
                 index=0
             )
         with col2:
             time_range = st.selectbox(
-                '📅 Time Range',
+                'Time Range',
                 options=['30 days', '7 days', '1 day', 'All'],
                 index=0
             )
@@ -493,8 +566,10 @@ if trades_df is not None and not trades_df.empty:
                         low=filtered_ohlc['low'],
                         close=filtered_ohlc['close'],
                         name='Price',
-                        increasing_line_color='#00ff88',
-                        decreasing_line_color='#ff4757'
+                        increasing_line_color='#10b981',
+                        decreasing_line_color='#ef4444',
+                        increasing_fillcolor='rgba(16, 185, 129, 0.3)',
+                        decreasing_fillcolor='rgba(239, 68, 68, 0.3)'
                     ), secondary_y=False)
                 
                 # P&L line
@@ -504,7 +579,7 @@ if trades_df is not None and not trades_df.empty:
                         y=filtered_trades['asset_cumulative_pnl'],
                         mode='lines',
                         name='Asset P&L',
-                        line=dict(color='#ffa502', width=3)
+                        line=dict(color='#1e3c72', width=3)
                     ), secondary_y=True)
 
                     # Trade markers
@@ -518,10 +593,10 @@ if trades_df is not None and not trades_df.empty:
                             mode='markers',
                             name='Buy',
                             marker=dict(
-                                color='#00ff88',
+                                color='#10b981',
                                 symbol='triangle-up',
-                                size=16,
-                                line=dict(width=2, color='#00cc66')
+                                size=14,
+                                line=dict(width=2, color='#059669')
                             ),
                             hovertemplate='<b>BUY</b><br>Price: $%{y:,.2f}<br>%{x}<extra></extra>'
                         ), secondary_y=False)
@@ -533,41 +608,81 @@ if trades_df is not None and not trades_df.empty:
                             mode='markers',
                             name='Sell',
                             marker=dict(
-                                color='#ff4757',
+                                color='#ef4444',
                                 symbol='triangle-down',
-                                size=16,
-                                line=dict(width=2, color='#cc3644')
+                                size=14,
+                                line=dict(width=2, color='#dc2626')
                             ),
                             hovertemplate='<b>SELL</b><br>Price: $%{y:,.2f}<br>%{x}<extra></extra>'
                         ), secondary_y=False)
 
                 fig_asset.update_layout(
                     title=dict(
-                        text=f'🚀 {selected_asset} - Advanced Trading Analysis',
-                        font=dict(size=20, color='#2c3e50')
+                        text=f'{selected_asset} - Price & Performance Analysis',
+                        font=dict(size=18, color='#1e3c72', family='Inter')
                     ),
                     template='plotly_white',
                     xaxis_rangeslider_visible=True,
                     hovermode='x unified',
-                    plot_bgcolor='rgba(0,0,0,0)',
-                    paper_bgcolor='rgba(0,0,0,0)'
+                    plot_bgcolor='rgba(248, 250, 252, 0.8)',
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    font=dict(family='Inter'),
+                    xaxis=dict(
+                        showgrid=True,
+                        gridcolor='rgba(30, 60, 114, 0.1)'
+                    ),
+                    yaxis=dict(
+                        showgrid=True,
+                        gridcolor='rgba(30, 60, 114, 0.1)'
+                    )
                 )
                 
-                fig_asset.update_yaxes(title_text="💵 Price (USD)", secondary_y=False)
-                fig_asset.update_yaxes(title_text="📈 P&L (USD)", secondary_y=True, showgrid=False)
+                fig_asset.update_yaxes(
+                    title_text="Price (USD)", 
+                    secondary_y=False,
+                    title_font=dict(family='Inter')
+                )
+                fig_asset.update_yaxes(
+                    title_text="P&L (USD)", 
+                    secondary_y=True, 
+                    showgrid=False,
+                    title_font=dict(family='Inter')
+                )
 
                 st.plotly_chart(fig_asset, use_container_width=True)
                 
-                # Asset statistics
+                # Professional asset statistics
                 if not asset_trades.empty:
                     asset_pnl = asset_trades['pnl'].sum()
                     num_trades = len(asset_trades)
                     avg_trade = asset_pnl / num_trades if num_trades > 0 else 0
                     
                     col1, col2, col3 = st.columns(3)
-                    col1.metric("💰 Asset P&L", f"${asset_pnl:,.2f}")
-                    col2.metric("🔢 Total Trades", num_trades)
-                    col3.metric("📊 Avg per Trade", f"${avg_trade:,.2f}")
+                    
+                    pnl_color = "#10b981" if asset_pnl >= 0 else "#ef4444"
+                    col1.markdown(f"""
+                    <div style="background: rgba(30, 60, 114, 0.1); padding: 1rem; border-radius: 12px; text-align: center;">
+                        <div style="font-size: 0.9rem; color: #6b7280; margin-bottom: 0.5rem;">Asset P&L</div>
+                        <div style="font-size: 1.5rem; font-weight: 600; color: {pnl_color};">${asset_pnl:,.2f}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    col2.markdown(f"""
+                    <div style="background: rgba(30, 60, 114, 0.1); padding: 1rem; border-radius: 12px; text-align: center;">
+                        <div style="font-size: 0.9rem; color: #6b7280; margin-bottom: 0.5rem;">Total Trades</div>
+                        <div style="font-size: 1.5rem; font-weight: 600; color: #1e3c72;">{num_trades}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    avg_color = "#10b981" if avg_trade >= 0 else "#ef4444"
+                    col3.markdown(f"""
+                    <div style="background: rgba(30, 60, 114, 0.1); padding: 1rem; border-radius: 12px; text-align: center;">
+                        <div style="font-size: 0.9rem; color: #6b7280; margin-bottom: 0.5rem;">Avg per Trade</div>
+                        <div style="font-size: 1.5rem; font-weight: 600; color: {avg_color};">${avg_trade:,.2f}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+    
+    st.markdown('</div>', unsafe_allow_html=True)
 
     elif ohlc_df is not None:
         st.warning("Could not process OHLC data. Ensure the file contains an 'asset' column.")
