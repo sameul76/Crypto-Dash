@@ -633,18 +633,55 @@ if trades_df is not None and not trades_df.empty:
                 filtered_trades = asset_trades[mask_trades]
                 
                 if not filtered_ohlc.empty:
-                    fig_asset.add_trace(go.Candlestick(
-                        x=filtered_ohlc['timestamp'],
-                        open=filtered_ohlc['open'],
-                        high=filtered_ohlc['high'],
-                        low=filtered_ohlc['low'],
-                        close=filtered_ohlc['close'],
-                        name='Price',
-                        increasing_line_color='#10b981',
-                        decreasing_line_color='#ef4444',
-                        increasing_fillcolor='rgba(16, 185, 129, 0.3)',
-                        decreasing_fillcolor='rgba(239, 68, 68, 0.3)'
-                    ), secondary_y=False)
+                    # Prepare custom data for hover - include p-up and p-down if they exist
+                    hover_data = []
+                    has_p_values = 'p-up' in filtered_ohlc.columns and 'p-down' in filtered_ohlc.columns
+                    
+                    if has_p_values:
+                        # Create custom data array with p-up and p-down values
+                        hover_data = list(zip(filtered_ohlc['p-up'], filtered_ohlc['p-down']))
+                        
+                        fig_asset.add_trace(go.Candlestick(
+                            x=filtered_ohlc['timestamp'],
+                            open=filtered_ohlc['open'],
+                            high=filtered_ohlc['high'],
+                            low=filtered_ohlc['low'],
+                            close=filtered_ohlc['close'],
+                            name='Price',
+                            increasing_line_color='#10b981',
+                            decreasing_line_color='#ef4444',
+                            increasing_fillcolor='rgba(16, 185, 129, 0.3)',
+                            decreasing_fillcolor='rgba(239, 68, 68, 0.3)',
+                            customdata=hover_data,
+                            hovertemplate='<b>%{x}</b><br>' +
+                                        'Open: $%{open:,.4f}<br>' +
+                                        'High: $%{high:,.4f}<br>' +
+                                        'Low: $%{low:,.4f}<br>' +
+                                        'Close: $%{close:,.4f}<br>' +
+                                        'P-Up: %{customdata[0]:,.4f}<br>' +
+                                        'P-Down: %{customdata[1]:,.4f}<br>' +
+                                        '<extra></extra>'
+                        ), secondary_y=False)
+                    else:
+                        # Fallback without p-up/p-down values
+                        fig_asset.add_trace(go.Candlestick(
+                            x=filtered_ohlc['timestamp'],
+                            open=filtered_ohlc['open'],
+                            high=filtered_ohlc['high'],
+                            low=filtered_ohlc['low'],
+                            close=filtered_ohlc['close'],
+                            name='Price',
+                            increasing_line_color='#10b981',
+                            decreasing_line_color='#ef4444',
+                            increasing_fillcolor='rgba(16, 185, 129, 0.3)',
+                            decreasing_fillcolor='rgba(239, 68, 68, 0.3)',
+                            hovertemplate='<b>%{x}</b><br>' +
+                                        'Open: $%{open:,.4f}<br>' +
+                                        'High: $%{high:,.4f}<br>' +
+                                        'Low: $%{low:,.4f}<br>' +
+                                        'Close: $%{close:,.4f}<br>' +
+                                        '<extra></extra>'
+                        ), secondary_y=False)
                 
                 # P&L line
                 if not filtered_trades.empty:
