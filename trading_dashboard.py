@@ -3,16 +3,15 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import plotly.express as px
 from datetime import datetime, timedelta
 import io
 
-# Imports for Google Drive
+# Google Drive
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 
-# --- Configuration ---
+# --- Page config ---
 st.set_page_config(
     page_title="Trading Performance Analytics",
     layout="wide",
@@ -44,7 +43,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- Google Drive Data Loading ---
+# --- Google Drive helpers ---
 def get_gdrive_service():
     if "gcp_service_account" not in st.secrets:
         st.error("GCP service account credentials not found in Streamlit Secrets.")
@@ -87,7 +86,7 @@ def read_gdrive_parquet(file_bytes):
         return None
     return pd.read_parquet(file_bytes)
 
-# --- P&L and Metrics ---
+# --- P&L + metrics ---
 def calculate_pnl_and_metrics(trades_df):
     if trades_df is None or trades_df.empty:
         return {}, pd.DataFrame(), {}
@@ -97,53 +96,49 @@ def calculate_pnl_and_metrics(trades_df):
     df = df.sort_values('timestamp').reset_index(drop=True)
     df['pnl'] = 0.0
     df['cumulative_pnl'] = 0.0
-    total_cumulative_pnl = 0.0
-    winning_trades = losing_trades = 0
-    gross_profit = gross_loss = 0.0
-    peak_pnl = max_drawdown = 0.0
+    total_cum = 0.0
+    win = loss = 0
+    gp = gl = 0.0
+    peak = mdd = 0.0
 
     for i, row in df.iterrows():
-        asset = row['asset']
-        action = row['action']
-        price = float(row['price'])
-        quantity = float(row['quantity'])
+        asset = row['asset']; action = row['action']
+        price = float(row['price']); qty = float(row['quantity'])
         if asset not in positions:
             positions[asset] = {'quantity': 0.0, 'cost': 0.0}
             pnl_per_asset[asset] = 0.0
-        current_pnl = 0.0
+        cur = 0.0
         if action == 'buy':
-            positions[asset]['cost'] += quantity * price
-            positions[asset]['quantity'] += quantity
+            positions[asset]['cost'] += qty * price
+            positions[asset]['quantity'] += qty
         elif action == 'sell' and positions[asset]['quantity'] > 0:
-            avg_cost = positions[asset]['cost'] / positions[asset]['quantity']
-            trade_qty = min(quantity, positions[asset]['quantity'])
-            realized = (price - avg_cost) * trade_qty
+            avg = positions[asset]['cost'] / positions[asset]['quantity']
+            trade_qty = min(qty, positions[asset]['quantity'])
+            realized = (price - avg) * trade_qty
             pnl_per_asset[asset] += realized
-            total_cumulative_pnl += realized
-            current_pnl = realized
-            if realized > 0:
-                winning_trades += 1; gross_profit += realized
-            else:
-                losing_trades += 1; gross_loss += abs(realized)
-            positions[asset]['cost'] -= avg_cost * trade_qty
+            total_cum += realized
+            cur = realized
+            if realized > 0: win += 1; gp += realized
+            else: loss += 1; gl += abs(realized)
+            positions[asset]['cost'] -= avg * trade_qty
             positions[asset]['quantity'] -= trade_qty
-        df.loc[i, 'pnl'] = current_pnl
-        df.loc[i, 'cumulative_pnl'] = total_cumulative_pnl
-        peak_pnl = max(peak_pnl, total_cumulative_pnl)
-        drawdown = peak_pnl - total_cumulative_pnl
-        max_drawdown = max(max_drawdown, drawdown)
 
-    total_closed = winning_trades + losing_trades
-    summary_stats = {
-        'win_rate': (winning_trades / total_closed * 100) if total_closed > 0 else 0,
-        'profit_factor': (gross_profit / gross_loss) if gross_loss > 0 else float('inf'),
-        'total_trades': total_closed,
-        'avg_win': (gross_profit / winning_trades) if winning_trades > 0 else 0,
-        'avg_loss': (gross_loss / losing_trades) if losing_trades > 0 else 0,
-        'max_drawdown': max_drawdown
+        df.loc[i, 'pnl'] = cur
+        df.loc[i, 'cumulative_pnl'] = total_cum
+        peak = max(peak, total_cum)
+        mdd = max(mdd, peak - total_cum)
+
+    closed = win + loss
+    stats = {
+        'win_rate': (win / closed * 100) if closed > 0 else 0,
+        'profit_factor': (gp / gl) if gl > 0 else float('inf'),
+        'total_trades': closed,
+        'avg_win': (gp / win) if win > 0 else 0,
+        'avg_loss': (gl / loss) if loss > 0 else 0,
+        'max_drawdown': mdd
     }
     df['asset_cumulative_pnl'] = df.groupby('asset')['pnl'].cumsum()
-    return pnl_per_asset, df, summary_stats
+    return pnl_per_asset, df, stats
 
 # --- Header ---
 st.markdown("""
@@ -183,8 +178,8 @@ def load_data():
             return trades, None, None, None
 
     if trades is not None:
-        pnl_summary, trades_with_pnl, summary_stats = calculate_pnl_and_metrics(trades)
-        return trades_with_pnl, pnl_summary, ohlc, summary_stats
+        pnl_summary, trades_with_pnl, stats = calculate_pnl_and_metrics(trades)
+        return trades_with_pnl, pnl_summary, ohlc, stats
     return pd.DataFrame(), {}, pd.DataFrame(), {}
 
 trades_df, pnl_summary, ohlc_df, summary_stats = load_data()
@@ -196,18 +191,14 @@ with st.sidebar:
     if auto_refresh:
         st.rerun()
     if st.button("Refresh Data", type="primary"):
-        st.cache_data.clear()
-        st.rerun()
+        st.cache_data.clear(); st.rerun()
     st.markdown("---")
     if pnl_summary:
         st.markdown("## Portfolio Summary")
         total_pnl = sum(pnl_summary.values())
-        if total_pnl > 0:
-            pnl_color, pnl_bg, pnl_emoji = "#10b981","rgba(16,185,129,.1)","↗"
-        elif total_pnl < 0:
-            pnl_color, pnl_bg, pnl_emoji = "#ef4444","rgba(239,68,68,.1)","↘"
-        else:
-            pnl_color, pnl_bg, pnl_emoji = "#6b7280","rgba(107,114,128,.1)","→"
+        if total_pnl > 0: pnl_color, pnl_bg, pnl_emoji = "#10b981","rgba(16,185,129,.1)","↗"
+        elif total_pnl < 0: pnl_color, pnl_bg, pnl_emoji = "#ef4444","rgba(239,68,68,.1)","↘"
+        else: pnl_color, pnl_bg, pnl_emoji = "#6b7280","rgba(107,114,128,.1)","→"
         st.markdown(f"""
         <div class="sidebar-metric" style="background:{pnl_bg}; border-color:{pnl_color};">
           <div style="display:flex; align-items:center; justify-content:space-between;">
@@ -273,14 +264,16 @@ with st.sidebar:
             </div>
             """, unsafe_allow_html=True)
 
-# --- Main Content ---
+# --- Main content ---
 if trades_df is not None and not trades_df.empty:
 
-    # ==== Portfolio P&L Timeline ====
+    # ===== P&L timeline =====
     st.markdown('<div class="professional-section">', unsafe_allow_html=True)
     st.markdown('<h2 class="section-title">Portfolio Performance Timeline</h2>', unsafe_allow_html=True)
+
     buys = trades_df[trades_df['action'] == 'buy']
     sells = trades_df[trades_df['action'] == 'sell']
+
     fig_pnl = go.Figure()
     fig_pnl.add_trace(go.Scatter(
         x=trades_df['timestamp'], y=trades_df['cumulative_pnl'],
@@ -312,7 +305,7 @@ if trades_df is not None and not trades_df.empty:
     st.plotly_chart(fig_pnl, use_container_width=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
-    # ==== Asset Analysis ====
+    # ===== Asset analysis =====
     st.markdown('<div class="professional-section">', unsafe_allow_html=True)
     st.markdown('<h2 class="section-title">Asset Analysis</h2>', unsafe_allow_html=True)
 
@@ -320,6 +313,7 @@ if trades_df is not None and not trades_df.empty:
         available_assets = ohlc_df['asset'].unique()
         cvx_assets = [a for a in available_assets if 'CVX' in a.upper()]
         asset_options = []
+
         if cvx_assets:
             base = cvx_assets[0]
             cvx = ohlc_df[ohlc_df['asset'] == base].copy()
@@ -331,6 +325,7 @@ if trades_df is not None and not trades_df.empty:
             cvx_1 = cvx_1.reset_index(); cvx_5 = cvx_5.reset_index()
             ohlc_df = pd.concat([ohlc_df, cvx_1, cvx_5], ignore_index=True)
             asset_options += [('1 min CVX','CVX_1min'), ('5 min CVX','CVX_5min')]
+
         for a in sorted(available_assets):
             asset_options.append((a, a))
 
@@ -367,7 +362,7 @@ if trades_df is not None and not trades_df.empty:
                 filtered_trades = asset_trades[mask_trd].copy()
 
                 if not filtered_ohlc.empty:
-                    # ---- ROCK-SOLID CANDLESTICK w/ custom hover ----
+                    # ---------- Candlestick: strict, version-safe ----------
                     def find_col(candidates, cols):
                         for c in candidates:
                             if c in cols:
@@ -379,9 +374,10 @@ if trades_df is not None and not trades_df.empty:
                     for c in ["open","high","low","close"]:
                         ohlc[c] = pd.to_numeric(ohlc[c], errors="coerce")
 
-                    # Drop NaNs that would break candlestick
+                    # Drop rows that break plotting and reset index
                     ohlc = ohlc.dropna(subset=["timestamp","open","high","low","close"]).reset_index(drop=True)
 
+                    # Tolerant P-Up / P-Down detection
                     cols_lower = set(ohlc.columns.str.lower())
                     colmap = {c.lower(): c for c in ohlc.columns}
                     p_up_key   = find_col(["p_up","p-up","pup","puprob","p_up_prob","puprobability"], cols_lower)
@@ -405,8 +401,8 @@ if trades_df is not None and not trades_df.empty:
                             low=ohlc["low"],
                             close=ohlc["close"],
                             name="Price",
-                            increasing_line_color="#10b981",
-                            decreasing_line_color="#ef4444",
+                            increasing=dict(line=dict(color="#10b981")),  # ✅ supported widely
+                            decreasing=dict(line=dict(color="#ef4444")),  # ✅ supported widely
                             customdata=customdata,
                             hovertemplate=(
                                 "📅 %{x|%Y-%m-%d %H:%M:%S}<br>"
@@ -421,7 +417,7 @@ if trades_df is not None and not trades_df.empty:
                         secondary_y=False
                     )
 
-                # P&L line + markers
+                # P&L line + trade markers
                 if not filtered_trades.empty:
                     fig_asset.add_trace(go.Scatter(
                         x=filtered_trades['timestamp'],
@@ -450,13 +446,18 @@ if trades_df is not None and not trades_df.empty:
                 fig_asset.update_layout(
                     title=dict(text=f'{selected_asset} - Price & Performance Analysis',
                                font=dict(size=18, color='#1e3c72', family='Inter')),
-                    template='plotly_white', xaxis_rangeslider_visible=True, hovermode='x unified',
-                    plot_bgcolor='rgba(248,250,252,.8)', paper_bgcolor='rgba(0,0,0,0)', font=dict(family='Inter'),
+                    template='plotly_white',
+                    xaxis_rangeslider_visible=True,
+                    hovermode='x unified',
+                    plot_bgcolor='rgba(248,250,252,.8)',
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    font=dict(family='Inter'),
                     xaxis=dict(showgrid=True, gridcolor='rgba(30,60,114,.1)'),
                     yaxis=dict(showgrid=True, gridcolor='rgba(30,60,114,.1)')
                 )
                 fig_asset.update_yaxes(title_text="Price (USD)", secondary_y=False, title_font=dict(family='Inter'))
                 fig_asset.update_yaxes(title_text="P&L (USD)",   secondary_y=True,  showgrid=False, title_font=dict(family='Inter'))
+
                 st.plotly_chart(fig_asset, use_container_width=True)
 
                 # Asset stats
