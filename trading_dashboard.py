@@ -50,9 +50,16 @@ def read_gdrive_file(file_id, service):
         
         # Once downloaded, reset the stream's position and read with pandas
         file_bytes.seek(0)
-        # Assuming the file is a CSV. Change accordingly for other formats (e.g., pd.read_excel).
-        df = pd.read_csv(file_bytes)
+        
+        # --- FIX for ENCODING ERROR ---
+        # Try reading with 'utf-8' first, if it fails, try 'latin1'
+        try:
+            df = pd.read_csv(file_bytes, encoding='utf-8')
+        except UnicodeDecodeError:
+            file_bytes.seek(0) # Reset buffer position again
+            df = pd.read_csv(file_bytes, encoding='latin1')
         return df
+        
     except Exception as e:
         # Catch potential errors if the file ID is wrong or file is not shared
         st.error(f"Error reading file with ID '{file_id}' from Google Drive.")
@@ -132,6 +139,13 @@ def load_data():
     # Load the data files
     trades = read_gdrive_file(TRADES_FILE_ID, gdrive_service)
     ohlc_data = read_gdrive_file(OHLC_FILE_ID, gdrive_service)
+    
+    # --- FIX for KeyError ---
+    # Standardize column names to prevent key errors (e.g. 'Asset' vs 'asset')
+    if trades is not None:
+        trades.columns = [col.lower().strip() for col in trades.columns]
+    if ohlc_data is not None:
+        ohlc_data.columns = [col.lower().strip() for col in ohlc_data.columns]
     
     if trades is not None:
         pnl_summary, trades_with_pnl = calculate_pnl(trades)
