@@ -22,7 +22,7 @@ st.set_page_config(
     }
 )
 
-# Custom CSS for professional modern styling with better contrast
+# Custom CSS for professional modern styling
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
@@ -30,11 +30,11 @@ st.markdown("""
     .main-header {
         text-align: center;
         padding: 3rem 2rem;
-        background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+        background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
         color: white;
         border-radius: 20px;
         margin-bottom: 3rem;
-        box-shadow: 0 20px 60px rgba(37, 99, 235, 0.3);
+        box-shadow: 0 20px 60px rgba(30, 60, 114, 0.3);
         position: relative;
         overflow: hidden;
     }
@@ -66,9 +66,9 @@ st.markdown("""
     }
     
     .professional-section {
-        background: rgba(255, 255, 255, 0.95);
+        background: rgba(255, 255, 255, 0.8);
         backdrop-filter: blur(20px);
-        border: 1px solid rgba(229, 231, 235, 0.8);
+        border: 1px solid rgba(255, 255, 255, 0.2);
         border-radius: 16px;
         padding: 2rem;
         margin: 2rem 0;
@@ -79,23 +79,23 @@ st.markdown("""
         font-family: 'Inter', sans-serif;
         font-weight: 600;
         font-size: 1.5rem;
-        color: #1f2937;
+        color: #1e3c72;
         margin-bottom: 1.5rem;
         padding-bottom: 0.5rem;
-        border-bottom: 2px solid #e5e7eb;
+        border-bottom: 2px solid #e8f4f8;
     }
     
     .stSelectbox > div > div {
-        background: rgba(255, 255, 255, 0.95);
-        border: 1px solid rgba(209, 213, 219, 0.8);
+        background: rgba(255, 255, 255, 0.9);
+        border: 1px solid rgba(30, 60, 114, 0.2);
         border-radius: 12px;
         box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
         transition: all 0.3s ease;
     }
     
     .stSelectbox > div > div:hover {
-        border-color: #2563eb;
-        box-shadow: 0 6px 20px rgba(37, 99, 235, 0.2);
+        border-color: #1e3c72;
+        box-shadow: 0 6px 20px rgba(30, 60, 114, 0.2);
     }
     
     .main .block-container {
@@ -103,53 +103,29 @@ st.markdown("""
         padding-bottom: 2rem;
     }
     
-    /* Light sidebar styling for better readability */
+    /* Sidebar styling */
     .css-1d391kg {
         background: linear-gradient(180deg, #f8fafc 0%, #e2e8f0 100%);
     }
     
     [data-testid="stSidebar"] > div:first-child {
-        background: linear-gradient(180deg, #f1f5f9 0%, #e2e8f0 100%);
-        color: #1f2937;
+        background: linear-gradient(180deg, #1e3c72 0%, #2a5298 100%);
     }
     
-    /* Light sidebar metrics with dark text */
+    /* Professional metrics in sidebar */
     .sidebar-metric {
-        background: rgba(255, 255, 255, 0.9);
+        background: rgba(255, 255, 255, 0.1);
         padding: 1rem;
         border-radius: 12px;
         margin: 0.5rem 0;
-        border: 1px solid rgba(229, 231, 235, 0.8);
-        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        backdrop-filter: blur(10px);
         transition: all 0.3s ease;
-        color: #1f2937;
     }
     
     .sidebar-metric:hover {
-        background: rgba(255, 255, 255, 1);
+        background: rgba(255, 255, 255, 0.15);
         transform: translateY(-2px);
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-    }
-    
-    /* Sidebar headings */
-    .css-1v3fvcr h2 {
-        color: #1f2937 !important;
-        font-weight: 600;
-    }
-    
-    .css-1v3fvcr h3 {
-        color: #374151 !important;
-        font-weight: 500;
-    }
-    
-    /* Sidebar text */
-    [data-testid="stSidebar"] .markdown-text-container {
-        color: #1f2937 !important;
-    }
-    
-    /* Progress bar container */
-    .stProgress > div > div > div {
-        background-color: #e5e7eb;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -535,30 +511,15 @@ if trades_df is not None and not trades_df.empty:
     st.markdown('<h2 class="section-title">Asset Analysis</h2>', unsafe_allow_html=True)
     
     if ohlc_df is not None and 'asset' in ohlc_df.columns:
-        # Check for specific CVX assets
-        available_assets = ohlc_df['asset'].unique()
-        cvx_options = []
-        
-        if 'CVX_1min' in available_assets:
-            cvx_options.append(('1 min CVX', 'CVX_1min'))
-        if 'CVX_5min' in available_assets:
-            cvx_options.append(('5 min CVX', 'CVX_5min'))
-        
-        # If CVX assets not found, fall back to all assets
-        if not cvx_options:
-            cvx_options = [(asset, asset) for asset in sorted(available_assets)]
+        available_assets_ohlc = sorted(ohlc_df['asset'].unique())
         
         col1, col2 = st.columns([3, 1])
         with col1:
-            # Display friendly names but use actual asset names for data
-            display_options = [option[0] for option in cvx_options]
-            selected_display = st.selectbox(
-                'Select CVX Timeframe', 
-                options=display_options, 
+            selected_asset = st.selectbox(
+                'Select Asset', 
+                options=available_assets_ohlc, 
                 index=0
             )
-            # Get the actual asset name
-            selected_asset = next(option[1] for option in cvx_options if option[0] == selected_display)
         with col2:
             time_range = st.selectbox(
                 'Time Range',
@@ -721,10 +682,10 @@ if trades_df is not None and not trades_df.empty:
                     </div>
                     """, unsafe_allow_html=True)
     
+    st.markdown('</div>', unsafe_allow_html=True)
+
     elif ohlc_df is not None:
         st.warning("Could not process OHLC data. Ensure the file contains an 'asset' column.")
-    
-    st.markdown('</div>', unsafe_allow_html=True)
 
 else:
     st.error("No trading data available. Please check your data connection.")
