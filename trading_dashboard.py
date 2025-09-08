@@ -252,40 +252,43 @@ if trades_df is not None and not trades_df.empty:
         if selected_asset:
             asset_trades = trades_df[trades_df['asset'] == selected_asset]
             asset_ohlc = ohlc_df[ohlc_df['asset'] == selected_asset].copy()
-            
-            asset_ohlc['timestamp'] = pd.to_datetime(asset_ohlc['timestamp'])
-            asset_trades['timestamp'] = pd.to_datetime(asset_trades['timestamp'])
 
-            end_date = asset_ohlc['timestamp'].max() if not asset_ohlc.empty else datetime.now()
-            start_date = end_date - timedelta(days=30)
-            if not asset_ohlc.empty and start_date < asset_ohlc['timestamp'].min():
-                start_date = asset_ohlc['timestamp'].min()
-            
-            fig_asset = make_subplots(specs=[[[{"secondary_y": True}]]])
-            
-            if not asset_ohlc.empty:
-                fig_asset.add_trace(go.Candlestick(x=asset_ohlc['timestamp'], open=asset_ohlc['open'], high=asset_ohlc['high'], low=asset_ohlc['low'], close=asset_ohlc['close'], name='Candles'), secondary_y=False)
-            
-            fig_asset.add_trace(go.Scatter(x=asset_trades['timestamp'], y=asset_trades['asset_cumulative_pnl'], mode='lines', name='Asset P&L', line=dict(color='orange')), secondary_y=True)
+            if asset_ohlc.empty and asset_trades.empty:
+                st.warning(f"No OHLC or trade data available for {selected_asset}.")
+            else:
+                asset_ohlc['timestamp'] = pd.to_datetime(asset_ohlc['timestamp'])
+                asset_trades['timestamp'] = pd.to_datetime(asset_trades['timestamp'])
 
-            asset_buys = asset_trades[asset_trades['action'] == 'buy']
-            asset_sells = asset_trades[asset_trades['action'] == 'sell']
-            
-            fig_asset.add_trace(go.Scatter(x=asset_buys['timestamp'], y=asset_buys['price'], mode='markers', name='Buy', marker=dict(color='rgba(0, 255, 0, 0.9)', symbol='triangle-up', size=16, line=dict(width=2, color='DarkGreen'))), secondary_y=False)
-            fig_asset.add_trace(go.Scatter(x=asset_sells['timestamp'], y=asset_sells['price'], mode='markers', name='Sell', marker=dict(color='rgba(255, 0, 0, 0.9)', symbol='triangle-down', size=16, line=dict(width=2, color='DarkRed'))), secondary_y=False)
+                end_date = asset_ohlc['timestamp'].max() if not asset_ohlc.empty else datetime.now()
+                start_date = end_date - timedelta(days=30)
+                if not asset_ohlc.empty and start_date < asset_ohlc['timestamp'].min():
+                    start_date = asset_ohlc['timestamp'].min()
+                
+                fig_asset = make_subplots(specs=[[[{"secondary_y": True}]]])
+                
+                if not asset_ohlc.empty:
+                    fig_asset.add_trace(go.Candlestick(x=asset_ohlc['timestamp'], open=asset_ohlc['open'], high=asset_ohlc['high'], low=asset_ohlc['low'], close=asset_ohlc['close'], name='Candles'), secondary_y=False)
+                
+                fig_asset.add_trace(go.Scatter(x=asset_trades['timestamp'], y=asset_trades['asset_cumulative_pnl'], mode='lines', name='Asset P&L', line=dict(color='orange')), secondary_y=True)
 
-            for _, trade in asset_buys.iterrows():
-                fig_asset.add_shape(type="line", x0=trade['timestamp'], y0=0, x1=trade['timestamp'], y1=1, yref='paper', line=dict(color="rgba(0, 255, 0, 0.5)", width=1, dash="dash"))
+                asset_buys = asset_trades[asset_trades['action'] == 'buy']
+                asset_sells = asset_trades[asset_trades['action'] == 'sell']
+                
+                fig_asset.add_trace(go.Scatter(x=asset_buys['timestamp'], y=asset_buys['price'], mode='markers', name='Buy', marker=dict(color='rgba(0, 255, 0, 0.9)', symbol='triangle-up', size=16, line=dict(width=2, color='DarkGreen'))), secondary_y=False)
+                fig_asset.add_trace(go.Scatter(x=asset_sells['timestamp'], y=asset_sells['price'], mode='markers', name='Sell', marker=dict(color='rgba(255, 0, 0, 0.9)', symbol='triangle-down', size=16, line=dict(width=2, color='DarkRed'))), secondary_y=False)
 
-            for _, trade in asset_sells.iterrows():
-                fig_asset.add_shape(type="line", x0=trade['timestamp'], y0=0, x1=trade['timestamp'], y1=1, yref='paper', line=dict(color="rgba(255, 0, 0, 0.5)", width=1, dash="dash"))
+                for _, trade in asset_buys.iterrows():
+                    fig_asset.add_shape(type="line", x0=trade['timestamp'], y0=0, x1=trade['timestamp'], y1=1, yref='paper', line=dict(color="rgba(0, 255, 0, 0.5)", width=1, dash="dash"))
 
-            fig_asset.update_layout(title=f'Price History and Trades for {selected_asset}', template='plotly_white', xaxis_rangeslider_visible=True, xaxis_range=[start_date, end_date])
-            fig_asset.update_yaxes(title_text="Price (USD)", secondary_y=False)
-            fig_asset.update_yaxes(title_text="P&L (USD)", secondary_y=True, showgrid=False)
+                for _, trade in asset_sells.iterrows():
+                    fig_asset.add_shape(type="line", x0=trade['timestamp'], y0=0, x1=trade['timestamp'], y1=1, yref='paper', line=dict(color="rgba(255, 0, 0, 0.5)", width=1, dash="dash"))
 
-            st.plotly_chart(fig_asset, use_container_width=True)
-            st.info("💡 **Tip:** To scroll through history, drag the middle of the range slider at the bottom of the chart.")
+                fig_asset.update_layout(title=f'Price History and Trades for {selected_asset}', template='plotly_white', xaxis_rangeslider_visible=True, xaxis_range=[start_date, end_date])
+                fig_asset.update_yaxes(title_text="Price (USD)", secondary_y=False)
+                fig_asset.update_yaxes(title_text="P&L (USD)", secondary_y=True, showgrid=False)
+
+                st.plotly_chart(fig_asset, use_container_width=True)
+                st.info("💡 **Tip:** To scroll through history, drag the middle of the range slider at the bottom of the chart.")
 
     elif ohlc_df is not None:
         st.warning("Could not process OHLC data. Ensure the Google Drive file is correct and contains an 'asset' column.")
