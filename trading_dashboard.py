@@ -212,10 +212,6 @@ if summary_stats:
     st.sidebar.header("Performance Metrics")
     st.sidebar.metric("Total Closed Trades", f"{summary_stats['total_trades']:,}")
     st.sidebar.metric("Win Rate", f"{summary_stats['win_rate']:.2f}%")
-    st.sidebar.metric("Profit Factor", f"{summary_stats['profit_factor']:.2f}" if summary_stats['profit_factor'] != float('inf') else "∞")
-    st.sidebar.metric("Average Winning Trade", f"${summary_stats['avg_win']:,.2f}")
-    st.sidebar.metric("Average Losing Trade", f"${summary_stats['avg_loss']:,.2f}")
-    st.sidebar.metric("Max Drawdown", f"${summary_stats['max_drawdown']:,.2f}")
 
 # --- Main Content ---
 if trades_df is not None and not trades_df.empty:
@@ -273,8 +269,8 @@ if trades_df is not None and not trades_df.empty:
             asset_buys = asset_trades[asset_trades['action'] == 'buy']
             asset_sells = asset_trades[asset_trades['action'] == 'sell']
             
-            fig_asset.add_trace(go.Scatter(x=asset_buys['timestamp'], y=asset_buys['price'], mode='markers', name='Buy', marker=dict(color='rgba(0, 255, 0, 0.9)', symbol='triangle-up', size=12, line=dict(width=2, color='DarkGreen'))), secondary_y=False)
-            fig_asset.add_trace(go.Scatter(x=asset_sells['timestamp'], y=asset_sells['price'], mode='markers', name='Sell', marker=dict(color='rgba(255, 0, 0, 0.9)', symbol='triangle-down', size=12, line=dict(width=2, color='DarkRed'))), secondary_y=False)
+            fig_asset.add_trace(go.Scatter(x=asset_buys['timestamp'], y=asset_buys['price'], mode='markers', name='Buy', marker=dict(color='rgba(0, 255, 0, 0.9)', symbol='triangle-up', size=16, line=dict(width=2, color='DarkGreen'))), secondary_y=False)
+            fig_asset.add_trace(go.Scatter(x=asset_sells['timestamp'], y=asset_sells['price'], mode='markers', name='Sell', marker=dict(color='rgba(255, 0, 0, 0.9)', symbol='triangle-down', size=16, line=dict(width=2, color='DarkRed'))), secondary_y=False)
 
             for _, trade in asset_buys.iterrows():
                 fig_asset.add_shape(type="line", x0=trade['timestamp'], y0=0, x1=trade['timestamp'], y1=1, yref='paper', line=dict(color="rgba(0, 255, 0, 0.5)", width=1, dash="dash"))
