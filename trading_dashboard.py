@@ -161,7 +161,10 @@ def get_gdrive_service():
         st.error("GCP service account credentials not found in Streamlit Secrets.")
         st.info("Please follow the setup guide to add your credentials to your app's settings.")
         return None
-    creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=['https://www.googleapis.com/auth/drive.readonly'])
+    creds = Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"],
+        scopes=['https://www.googleapis.com/auth/drive.readonly']
+    )
     service = build('drive', 'v3', credentials=creds)
     return service
 
@@ -330,112 +333,6 @@ def load_data():
     return pd.DataFrame(), {}, pd.DataFrame(), {}
 
 trades_df, pnl_summary, ohlc_df, summary_stats = load_data()
-
-# --- Enhanced Sidebar ---
-with st.sidebar:
-    st.markdown("## Portfolio Control")
-    
-    # Auto-refresh toggle
-    auto_refresh = st.toggle("Auto-refresh (5min)", value=False)
-    if auto_refresh:
-        st.rerun()
-    
-    if st.button('Refresh Data', type="primary"):
-        st.cache_data.clear()
-        st.rerun()
-    
-    st.markdown("---")
-    
-    if pnl_summary:
-        st.markdown("## Portfolio Summary")
-        total_pnl = sum(pnl_summary.values())
-        
-        # Professional P&L display
-        if total_pnl > 0:
-            pnl_color = "#10b981"
-            pnl_bg = "rgba(16, 185, 129, 0.1)"
-            pnl_emoji = "↗"
-        elif total_pnl < 0:
-            pnl_color = "#ef4444" 
-            pnl_bg = "rgba(239, 68, 68, 0.1)"
-            pnl_emoji = "↘"
-        else:
-            pnl_color = "#6b7280"
-            pnl_bg = "rgba(107, 114, 128, 0.1)"
-            pnl_emoji = "→"
-        
-        st.markdown(f"""
-        <div class="sidebar-metric" style="background: {pnl_bg}; border-color: {pnl_color};">
-            <div style="display: flex; align-items: center; justify-content: space-between;">
-                <span style="font-size: 0.9rem; opacity: 0.8;">Total P&L</span>
-                <span style="font-size: 1.2rem;">{pnl_emoji}</span>
-            </div>
-            <div style="font-size: 1.4rem; font-weight: 600; color: {pnl_color}; margin-top: 0.3rem;">
-                ${total_pnl:,.2f}
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        st.markdown("### Asset Allocation")
-        for asset, pnl in sorted(pnl_summary.items(), key=lambda x: x[1], reverse=True):
-            color = "#10b981" if pnl >= 0 else "#ef4444"
-            bg_color = "rgba(16, 185, 129, 0.1)" if pnl >= 0 else "rgba(239, 68, 68, 0.1)"
-            
-            st.markdown(f"""
-            <div class="sidebar-metric" style="background: {bg_color}; border-color: {color};">
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <span style="font-weight: 500; font-size: 0.9rem;">{asset}</span>
-                    <span style="color: {color}; font-weight: 600;">${pnl:,.2f}</span>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-    
-    if summary_stats:
-        st.markdown("---")
-        st.markdown("## Key Metrics")
-        
-        # Professional metrics display
-        win_rate = summary_stats['win_rate']
-        st.markdown(f"""
-        <div class="sidebar-metric">
-            <div style="display: flex; justify-content: space-between; align-items: center;">
-                <span style="font-size: 0.9rem;">Win Rate</span>
-                <span style="font-weight: 600; color: #1f2937;">{win_rate:.1f}%</span>
-            </div>
-            <div style="background: rgba(229, 231, 235, 0.8); border-radius: 8px; height: 6px; margin-top: 0.5rem;">
-                <div style="background: #10b981; height: 6px; border-radius: 8px; width: {win_rate}%;"></div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        st.markdown(f"""
-        <div class="sidebar-metric">
-            <div style="display: flex; justify-content: space-between;">
-                <span style="font-size: 0.9rem;">Total Trades</span>
-                <span style="font-weight: 600; color: #1f2937;">{summary_stats['total_trades']:,}</span>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        st.markdown(f"""
-        <div class="sidebar-metric">
-            <div style="display: flex; justify-content: space-between;">
-                <span style="font-size: 0.9rem;">Max Drawdown</span>
-                <span style="font-weight: 600; color: #ef4444;">${summary_stats['max_drawdown']:,.2f}</span>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        if summary_stats['profit_factor'] != float('inf'):
-            pf_color = "#10b981" if summary_stats['profit_factor'] > 1 else "#ef4444"
-            st.markdown(f"""
-            <div class="sidebar-metric">
-                <div style="display: flex; justify-content: space-between;">
-                    <span style="font-size: 0.9rem;">Profit Factor</span>
-                    <span style="font-weight: 600; color: {pf_color};">{summary_stats['profit_factor']:.2f}</span>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
 
 # --- Main Content ---
 if trades_df is not None and not trades_df.empty:
@@ -633,37 +530,56 @@ if trades_df is not None and not trades_df.empty:
                 filtered_trades = asset_trades[mask_trades]
                 
                 if not filtered_ohlc.empty:
-                    # Check if p-up and p-down columns exist
-                    has_p_values = 'p-up' in filtered_ohlc.columns and 'p-down' in filtered_ohlc.columns
-                    
-                    # Create custom hover text like in the reference code
-                    if has_p_values:
-                        hover_text = [
-                            f"Open: ${row.open:.4f}<br>High: ${row.high:.4f}<br>Low: ${row.low:.4f}<br>Close: ${row.close:.4f}<br>" +
-                            (f"<b>P-Up: {getattr(row, 'p-up', 0):.4f}</b><br><b>P-Down: {getattr(row, 'p-down', 0):.4f}</b>" 
-                             if pd.notna(getattr(row, 'p-up', None)) else "No probability data")
-                            for index, row in filtered_ohlc.iterrows()
-                        ]
-                    else:
-                        hover_text = [
-                            f"Open: ${row.open:.4f}<br>High: ${row.high:.4f}<br>Low: ${row.low:.4f}<br>Close: ${row.close:.4f}"
-                            for index, row in filtered_ohlc.iterrows()
-                        ]
-                    
-                    fig_asset.add_trace(go.Candlestick(
-                        x=filtered_ohlc['timestamp'],
-                        open=filtered_ohlc['open'],
-                        high=filtered_ohlc['high'],
-                        low=filtered_ohlc['low'],
-                        close=filtered_ohlc['close'],
-                        name='Price',
-                        increasing_line_color='#10b981',
-                        decreasing_line_color='#ef4444',
-                        increasing_fillcolor='rgba(16, 185, 129, 0.3)',
-                        decreasing_fillcolor='rgba(239, 68, 68, 0.3)',
-                        hoverinfo="x+text",
-                        hovertext=hover_text
-                    ), secondary_y=False)
+                    # ================================
+                    # FIX: Hovertemplate + customdata
+                    # ================================
+                    def find_col(candidates, cols):
+                        for c in candidates:
+                            if c in cols:
+                                return c
+                        return None
+
+                    cols_lower = set(filtered_ohlc.columns.str.lower())
+                    colmap = {c.lower(): c for c in filtered_ohlc.columns}  # original casing
+
+                    p_up_key   = find_col(["p_up", "p-up", "pup", "puprob", "p_up_prob", "puprobability"], cols_lower)
+                    p_down_key = find_col(["p_down", "p-down", "pdown", "pdownprob", "p_down_prob", "pdownprobability"], cols_lower)
+
+                    def fmt_series(key):
+                        if key is None:
+                            return ["—"] * len(filtered_ohlc)
+                        s = filtered_ohlc[colmap[key]]
+                        return [f"{v:.4f}" if pd.notna(v) else "—" for v in s]
+
+                    pu_str = fmt_series(p_up_key)
+                    pd_str = fmt_series(p_down_key)
+                    customdata = np.stack([pu_str, pd_str], axis=-1)
+
+                    fig_asset.add_trace(
+                        go.Candlestick(
+                            x=filtered_ohlc['timestamp'],
+                            open=filtered_ohlc['open'],
+                            high=filtered_ohlc['high'],
+                            low=filtered_ohlc['low'],
+                            close=filtered_ohlc['close'],
+                            name='Price',
+                            increasing_line_color='#10b981',
+                            decreasing_line_color='#ef4444',
+                            increasing_fillcolor='rgba(16, 185, 129, 0.3)',
+                            decreasing_fillcolor='rgba(239, 68, 68, 0.3)',
+                            customdata=customdata,
+                            hovertemplate=(
+                                "📅 %{x|%Y-%m-%d %H:%M:%S}<br>"
+                                "Open: $%{open:.4f}<br>"
+                                "High: $%{high:.4f}<br>"
+                                "Low: $%{low:.4f}<br>"
+                                "Close: $%{close:.4f}<br>"
+                                "P-Up: %{customdata[0]}<br>"
+                                "P-Down: %{customdata[1]}<extra></extra>"
+                            ),
+                        ),
+                        secondary_y=False
+                    )
                 
                 # P&L line
                 if not filtered_trades.empty:
@@ -716,7 +632,7 @@ if trades_df is not None and not trades_df.empty:
                     ),
                     template='plotly_white',
                     xaxis_rangeslider_visible=True,
-                    hovermode='x unified',
+                    hovermode='x unified',   # keep unified hover without breaking the template
                     plot_bgcolor='rgba(248, 250, 252, 0.8)',
                     paper_bgcolor='rgba(0,0,0,0)',
                     font=dict(family='Inter'),
