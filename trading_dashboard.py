@@ -96,49 +96,36 @@ def calculate_pnl_and_metrics(trades_df):
     df["asset_cumulative_pnl"] = df.groupby("asset")["pnl"].cumsum()
     return pnl_per_asset, df, stats
 
-# =========================
-# NEW LOGIC FUNCTION
-# =========================
 def calculate_open_positions(trades_df, market_df):
     if trades_df is None or trades_df.empty or market_df is None or market_df.empty:
         return pd.DataFrame()
 
     positions = {}
-    # First, calculate final quantities and average costs by iterating through trades
     for _, row in trades_df.sort_values("timestamp").iterrows():
         asset, action, qty, price = row["asset"], row["action"], float(row["quantity"]), float(row["price"])
         if asset not in positions:
             positions[asset] = {"quantity": 0.0, "cost": 0.0}
-
         if action == "buy":
             positions[asset]["cost"] += qty * price
             positions[asset]["quantity"] += qty
-        elif action == "sell":
-            if positions[asset]["quantity"] > 0:
-                avg_cost_per_unit = positions[asset]["cost"] / positions[asset]["quantity"]
-                positions[asset]["cost"] -= qty * avg_cost_per_unit
-                positions[asset]["quantity"] -= qty
+        elif action == "sell" and positions[asset]["quantity"] > 0:
+            avg_cost_per_unit = positions[asset]["cost"] / positions[asset]["quantity"]
+            positions[asset]["cost"] -= qty * avg_cost_per_unit
+            positions[asset]["quantity"] -= qty
     
-    # Create a list of positions that are still open
     open_positions = []
     for asset, data in positions.items():
-        if data["quantity"] > 1e-9:  # Use a small epsilon for float comparison
+        if data["quantity"] > 1e-9:
             latest_market_data = market_df[market_df['asset'] == asset]
             if not latest_market_data.empty:
                 latest_price = latest_market_data.loc[latest_market_data['timestamp'].idxmax()]['close']
-                
                 avg_entry_price = data["cost"] / data["quantity"] if data["quantity"] > 0 else 0
                 current_value = data["quantity"] * latest_price
                 unrealized_pnl = current_value - data["cost"]
-                
                 open_positions.append({
-                    "Asset": asset,
-                    "Quantity": data["quantity"],
-                    "Avg. Entry Price": avg_entry_price,
-                    "Current Price": latest_price,
-                    "Unrealized P&L ($)": unrealized_pnl,
+                    "Asset": asset, "Quantity": data["quantity"], "Avg. Entry Price": avg_entry_price,
+                    "Current Price": latest_price, "Unrealized P&L ($)": unrealized_pnl,
                 })
-    
     return pd.DataFrame(open_positions)
 
 
@@ -152,7 +139,7 @@ def extract_drive_id(url_or_id: str) -> str:
     if m: return m.group(1); return s
 
 def download_drive_csv_bytes(url_or_id: str) -> bytes | None:
-    fid = extract_drive_id(url_or_id);
+    fid = extract_drive_id(url_or_id)
     if not fid: return None
     try:
         base = "https://drive.google.com/uc?export=download"
@@ -165,15 +152,17 @@ def download_drive_csv_bytes(url_or_id: str) -> bytes | None:
                     r2 = s.get(base, params=params, stream=True)
                     return r2.content
             return r1.content
-    except Exception: return None
+    except Exception as e:
+        st.error(f"Network error downloading file ID {fid}: {e}")
+        return None
 
 def read_csv_best_effort(raw: bytes, label: str) -> pd.DataFrame | None:
-    if not raw: st.error(f"Failed to download bytes for {label}."); return None
+    if not raw: st.warning(f"No data bytes received for {label} to parse."); return None
     if b"<html" in (raw[:512] or b"").lower():
-        st.error(f"Google Drive returned HTML for {label}. Set file to 'Anyone with the link: Viewer'.")
+        st.error(f"Google Drive returned an HTML page for {label}, not a file. Check sharing permissions.")
         return None
     try: return pd.read_csv(io.BytesIO(raw))
-    except Exception: st.error(f"Failed to parse {label} as CSV."); return None
+    except Exception: st.error(f"Failed to parse {label} as CSV after download."); return None
 
 
 # =========================
@@ -181,10 +170,15 @@ def read_csv_best_effort(raw: bytes, label: str) -> pd.DataFrame | None:
 # =========================
 @st.cache_data(ttl=600)
 def load_data(trades_link, market_link):
-    trades = read_csv_best_effort(download_drive_csv_bytes(trades_link), "Trades CSV")
-    market = read_csv_best_effort(download_drive_csv_bytes(market_link), "Market CSV")
+    raw_trades = download_drive_csv_bytes(trades_link)
+    if raw_trades is None: st.error("Failed to download bytes for Trades CSV.")
+    trades = read_csv_best_effort(raw_trades, "Trades CSV")
+    
+    raw_market = download_drive_csv_bytes(market_link)
+    if raw_market is None: st.error("Failed to download bytes for Market CSV.")
+    market = read_csv_best_effort(raw_market, "Market CSV")
 
-    if trades is not None:
+    if trades is not None and not trades.empty:
         trades = lower_strip_cols(trades)
         if "product_id" in trades.columns: trades = trades.rename(columns={"product_id": "asset"})
         trades = trades.rename(columns={"side": "action", "size": "quantity"})
@@ -194,7 +188,7 @@ def load_data(trades_link, market_link):
         for col in ["quantity", "price", "usd_value"]:
             if col in trades.columns: trades[col] = pd.to_numeric(trades[col], errors="coerce")
 
-    if market is not None:
+    if market is not None and not market.empty:
         market = lower_strip_cols(market)
         if "product_id" in market.columns: market = market.rename(columns={"product_id": "asset"})
         market["asset"] = market["asset"].apply(unify_symbol)
@@ -222,10 +216,12 @@ market_link_input = st.sidebar.text_input("Market (OHLCV) CSV Google Drive Link"
 
 trades_df, pnl_summary, summary_stats, market_df = load_data(trades_link_input, market_link_input)
 
-# --- NEW: Sidebar Positions Status ---
+# --- Sidebar Positions Status ---
 st.sidebar.markdown("---")
 st.sidebar.markdown("### Positions Status")
-if market_df is not None:
+
+# THIS IS THE FIX: Only run this section if market_df was loaded successfully.
+if market_df is not None and not market_df.empty:
     open_positions_df = calculate_open_positions(trades_df, market_df)
     
     all_assets = sorted(market_df["asset"].unique())
@@ -235,7 +231,7 @@ if market_df is not None:
         if asset in open_positions_lookup.index:
             pos = open_positions_lookup.loc[asset]
             pnl = pos["Unrealized P&L ($)"]
-            color = "lightgreen" if pnl > 0 else "salmon" # Use softer green/red colors
+            color = "lightgreen" if pnl > 0 else "salmon"
             
             st.sidebar.markdown(f'<p style="color:{color}; font-weight:bold; margin-bottom:0px;">{asset}</p>', unsafe_allow_html=True)
             st.sidebar.caption(
@@ -244,65 +240,54 @@ if market_df is not None:
                 f"Current: ${pos['Current Price']:.6f}"
             )
         else:
-            # Asset is not in an open trade
-            st.sidebar.markdown(f'<p style="color:royalblue;">{asset}</p>', unsafe_allow_html=True)
+            st.sidebar.markdown(f'<p style="color:royalblue; margin-bottom:0px;">{asset}</p>', unsafe_allow_html=True)
 
 # --- Main Page Controls ---
 st.sidebar.markdown("---")
 st.sidebar.markdown("### Chart Controls")
+selected_asset = None
 if market_df is not None and not market_df.empty:
     assets = sorted(market_df["asset"].unique())
     default_index = assets.index(DEFAULT_ASSET) if DEFAULT_ASSET in assets else 0
     selected_asset = st.sidebar.selectbox("Select Asset", assets, index=default_index)
     range_choice = st.sidebar.selectbox("Select Date Range", ["30 days", "7 days", "1 day", "All"], index=0)
-else:
-    selected_asset = None # No data loaded
 
 # --- Main Page Tabs ---
 tab1, tab2 = st.tabs(["📈 Candlestick Analysis", "💰 P&L Analysis"])
 
 with tab1:
     if selected_asset is None:
-        st.error("Market CSV could not be loaded. Please check the link and permissions.")
+        st.warning("Market data not loaded. Cannot display chart.")
     else:
-        # Charting logic remains the same...
         df = market_df[market_df["asset"] == selected_asset].copy().sort_values("timestamp")
-        if df.empty:
-            st.warning("No market data available for the selected asset.")
-        else:
-            end_date = df["timestamp"].max()
-            if range_choice == "1 day": start_date = end_date - timedelta(days=1)
-            elif range_choice == "7 days": start_date = end_date - timedelta(days=7)
-            elif range_choice == "30 days": start_date = end_date - timedelta(days=30)
-            else: start_date = df["timestamp"].min()
-            vis = df[(df["timestamp"] >= start_date) & (df["timestamp"] <= end_date)].copy()
+        end_date = df["timestamp"].max()
+        if range_choice == "1 day": start_date = end_date - timedelta(days=1)
+        elif range_choice == "7 days": start_date = end_date - timedelta(days=7)
+        elif range_choice == "30 days": start_date = end_date - timedelta(days=30)
+        else: start_date = df["timestamp"].min()
+        vis = df[(df["timestamp"] >= start_date) & (df["timestamp"] <= end_date)]
 
-            if vis.empty:
-                st.warning("No market data in the selected date range for this asset.")
-            else:
-                # ... Chart drawing logic ...
-                fig = go.Figure()
-                fig.add_trace(go.Candlestick(x=vis["timestamp"], open=vis["open"], high=vis["high"], low=vis["low"], close=vis["close"], name=selected_asset))
-                
-                asset_trades = pd.DataFrame()
-                if trades_df is not None:
-                    asset_trades = trades_df[(trades_df["asset"] == selected_asset) & (trades_df["timestamp"] >= start_date) & (trades_df["timestamp"] <= end_date)]
-                
+        if vis.empty:
+            st.warning("No market data in the selected date range for this asset.")
+        else:
+            fig = go.Figure()
+            fig.add_trace(go.Candlestick(x=vis["timestamp"], open=vis["open"], high=vis["high"], low=vis["low"], close=vis["close"], name=selected_asset))
+            
+            if trades_df is not None:
+                asset_trades = trades_df[(trades_df["asset"] == selected_asset) & (trades_df["timestamp"] >= start_date) & (trades_df["timestamp"] <= end_date)]
                 if not asset_trades.empty:
                     buys = asset_trades[asset_trades["action"] == "buy"]
                     sells = asset_trades[asset_trades["action"] == "sell"]
-                    if not buys.empty:
-                        fig.add_trace(go.Scatter(x=buys["timestamp"], y=buys["price"], mode="markers", name="BUY", marker=dict(symbol="triangle-up", size=10, color="green")))
-                    if not sells.empty:
-                        fig.add_trace(go.Scatter(x=sells["timestamp"], y=sells["price"], mode="markers", name="SELL", marker=dict(symbol="triangle-down", size=10, color="red")))
-                
-                fig.update_layout(
-                    template="plotly_white", xaxis_rangeslider_visible=False, hovermode="x unified",
-                    yaxis_title="Price (USD)", yaxis=dict(tickformat='.10f'),
-                    title=f"{selected_asset} — Price & Trades",
-                    legend=dict(orientation="h", y=1.03, x=0.5, xanchor="center"), height=600,
-                )
-                st.plotly_chart(fig, use_container_width=True)
+                    if not buys.empty: fig.add_trace(go.Scatter(x=buys["timestamp"], y=buys["price"], mode="markers", name="BUY", marker=dict(symbol="triangle-up", size=10, color="green")))
+                    if not sells.empty: fig.add_trace(go.Scatter(x=sells["timestamp"], y=sells["price"], mode="markers", name="SELL", marker=dict(symbol="triangle-down", size=10, color="red")))
+            
+            fig.update_layout(
+                template="plotly_white", xaxis_rangeslider_visible=False, hovermode="x unified",
+                yaxis_title="Price (USD)", yaxis=dict(tickformat='.10f'),
+                title=f"{selected_asset} — Price & Trades",
+                legend=dict(orientation="h", y=1.03, x=0.5, xanchor="center"), height=600,
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
 with tab2:
     if trades_df is None or trades_df.empty:
@@ -316,14 +301,15 @@ with tab2:
             m3.metric("Total Closed Trades", f"{summary_stats['total_trades']:,}")
         
         show_all_assets = st.checkbox("Show P&L for all assets (Portfolio)", value=True)
-        pnl_data = trades_df if show_all_assets else trades_df[trades_df['asset'] == selected_asset]
-        pnl_col = "cumulative_pnl" if show_all_assets else "asset_cumulative_pnl"
-        title = "Total Portfolio Cumulative P&L" if show_all_assets else f"Cumulative P&L for {selected_asset}"
-
-        if pnl_data.empty or pnl_data[pnl_col].sum() == 0:
-            st.warning(f"No P&L data to display.")
-        else:
-            fig_pnl = go.Figure()
-            fig_pnl.add_trace(go.Scatter(x=pnl_data["timestamp"], y=pnl_data[pnl_col], mode="lines", name="Cumulative P&L"))
-            fig_pnl.update_layout(title=title, template="plotly_white", yaxis_title="P&L (USD)")
-            st.plotly_chart(fig_pnl, use_container_width=True)
+        if selected_asset:
+            pnl_data = trades_df if show_all_assets else trades_df[trades_df['asset'] == selected_asset]
+            pnl_col = "cumulative_pnl" if show_all_assets else "asset_cumulative_pnl"
+            title = "Total Portfolio Cumulative P&L" if show_all_assets else f"Cumulative P&L for {selected_asset}"
+            
+            if pnl_data.empty or pnl_data[pnl_col].sum() == 0:
+                st.warning(f"No P&L data to display.")
+            else:
+                fig_pnl = go.Figure()
+                fig_pnl.add_trace(go.Scatter(x=pnl_data["timestamp"], y=pnl_data[pnl_col], mode="lines", name="Cumulative P&L"))
+                fig_pnl.update_layout(title=title, template="plotly_white", yaxis_title="P&L (USD)")
+                st.plotly_chart(fig_pnl, use_container_width=True)
