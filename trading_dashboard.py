@@ -11,7 +11,7 @@ from datetime import timedelta
 # HARD-CODED FILE LINKS (your two CSVs)
 # =========================
 TRADES_LINK = "https://drive.google.com/file/d/1zSdFcG4Xlh_iSa180V6LRSeEucAokXYk/view?usp=drive_link"
-MARKET_LINK = "https://drive.google.com/file/d/1tvY7CheH_p5f3uaE7VPUYS78hDHNmX_C/view?usp=sharing"  # OHLCV + probs (CSV)
+MARKET_LINK = "https://drive.google.com/file/d/1tvY7CheH_p5f3uaE7VPUYS78hDHNmX_C/view?usp=sharing"  # OHLCV (+ probs) CSV
 
 st.set_page_config(page_title="Trading Analytics — CSV x2", layout="wide")
 LOCAL_TZ = "America/Los_Angeles"
@@ -25,7 +25,7 @@ def lower_strip_cols(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 def to_local_naive(ts):
-    """Convert timestamps to local tz and drop tz info."""
+    """Convert timestamps to LOCAL_TZ and drop tz info (naive)."""
     s = pd.to_datetime(ts, errors="coerce")
     try:
         if s.dt.tz is not None:
@@ -52,7 +52,7 @@ def extract_drive_id(url_or_id: str) -> str:
     return s
 
 def download_drive_csv(url_or_id: str) -> pd.DataFrame | None:
-    """Download a Google Drive file as CSV via public link; return DataFrame."""
+    """Download a Google Drive file shared as CSV via public link; return DataFrame."""
     fid = extract_drive_id(url_or_id)
     if not fid:
         return None
@@ -170,7 +170,7 @@ def load_data():
             if "p_up" not in market.columns: market["p_up"] = np.nan
             if "p_down" not in market.columns: market["p_down"] = np.nan
 
-            # Make sure OHLC are numeric
+            # Ensure numeric OHLC
             for col in ["open", "high", "low", "close"]:
                 market[col] = pd.to_numeric(market[col], errors="coerce")
 
@@ -185,7 +185,7 @@ def load_data():
 trades_df, pnl_summary, summary_stats, market_df = load_data()
 
 st.markdown("## Trading Analytics — CSV x2")
-st.caption("Hover candles to see P-Up / P-Down. If you see ‘—’, those columns weren’t present for that bar. No fluff, just charts.")
+st.caption("Hover candles to see P-Up / P-Down. If you see ‘—’, those columns weren’t present for that row.")
 
 # =========================
 # Chart
