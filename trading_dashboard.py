@@ -15,6 +15,12 @@ LOCAL_TZ = "America/Los_Angeles"
 DEFAULT_ASSET = "GIGA-USD"
 
 # =========================
+# HARDCODED FILE LINKS
+# =========================
+TRADES_LINK = "https://drive.google.com/file/d/1zSdFcG4Xlh_iSa180V6LRSeEucAokXYk/view?usp=sharing"
+MARKET_LINK = "https://drive.google.com/file/d/1tvY7CheH_p5f3uaE7VPUYS78hDHNmX_C/view?usp=sharing"
+
+# =========================
 # Helper Functions (Data Processing)
 # =========================
 def lower_strip_cols(df: pd.DataFrame) -> pd.DataFrame:
@@ -204,21 +210,13 @@ def load_data(trades_link, market_link):
 # Streamlit App UI
 # =========================
 st.markdown("## Trading Analytics Dashboard")
-st.caption("Configure data sources and view position status in the sidebar.")
+st.caption("View position status and chart controls in the sidebar.")
+
+# --- Load data using the hardcoded links ---
+trades_df, pnl_summary, summary_stats, market_df = load_data(TRADES_LINK, MARKET_LINK)
 
 # --- Sidebar ---
-st.sidebar.markdown("## ⚙️ Inputs & Controls")
-if st.sidebar.button("Clear Cache & Refresh Data"):
-    st.cache_data.clear(); st.rerun()
-
-trades_link_input = st.sidebar.text_input("Trades CSV Google Drive Link", "https://docs.google.com/spreadsheets/d/e/2PACX-1vSDBj2h3Uh-3B2j-c0EVsTRa-2aE2n7fV2kT2xxu0a-v7i6oSCn-hWx3-c-aTRedvB2IOh3OHMUtV2l/pub?gid=989182373&single=true&output=csv")
-market_link_input = st.sidebar.text_input("Market (OHLCV) CSV Google Drive Link", "https://docs.google.com/spreadsheets/d/e/2PACX-1vSDBj2h3Uh-3B2j-c0EVsTRa-2aE2n7fV2kT2xxu0a-v7i6oSCn-hWx3-c-aTRedvB2IOh3OHMUtV2l/pub?gid=0&single=true&output=csv")
-
-trades_df, pnl_summary, summary_stats, market_df = load_data(trades_link_input, market_link_input)
-
-# --- Sidebar Positions Status ---
-st.sidebar.markdown("---")
-st.sidebar.markdown("### Positions Status")
+st.sidebar.markdown("## 📊 Positions Status")
 if market_df is not None and not market_df.empty:
     open_positions_df = calculate_open_positions(trades_df, market_df)
     
@@ -240,9 +238,8 @@ if market_df is not None and not market_df.empty:
         else:
             st.sidebar.markdown(f'<p style="color:royalblue; margin-bottom:0px;">{asset}</p>', unsafe_allow_html=True)
 
-# --- Main Page Controls ---
 st.sidebar.markdown("---")
-st.sidebar.markdown("### Chart Controls")
+st.sidebar.markdown("## ⚙️ Chart Controls")
 selected_asset = None
 if market_df is not None and not market_df.empty:
     assets = sorted(market_df["asset"].unique())
@@ -268,9 +265,6 @@ with tab1:
         if vis.empty:
             st.warning("No market data in the selected date range for this asset.")
         else:
-            # =================================================================
-            # FIX IS HERE: Re-introduce custom hover text for P-Up/P-Down
-            # =================================================================
             def fmt(v, decimals=4):
                 try: return f"{float(v):.{decimals}f}"
                 except (ValueError, TypeError): return "—"
@@ -290,8 +284,8 @@ with tab1:
             fig.add_trace(go.Candlestick(
                 x=vis["timestamp"], open=vis["open"], high=vis["high"], low=vis["low"], close=vis["close"],
                 name=selected_asset,
-                text=hovertext, # Use the custom text
-                hoverinfo="text" # Tell Plotly to only show our custom text
+                text=hovertext,
+                hoverinfo="text"
             ))
             
             if trades_df is not None:
