@@ -178,7 +178,7 @@ def download_drive_csv_bytes(url_or_id: str) -> bytes | None:
         base = "https://drive.google.com/uc?export=download"
         with requests.Session() as s:
             r1 = s.get(base, params={"id": fid}, stream=True, timeout=60)
-            # big-file confirm page
+            # Handle big-file confirm page
             if "text/html" in (r1.headers.get("Content-Type") or ""):
                 m = re.search(r"confirm=([0-9A-Za-z_-]+)", r1.text)
                 if m:
@@ -339,14 +339,17 @@ with tab1:
             if vis.empty:
                 st.warning("No market data in the selected date range for this asset.")
             else:
-                # -------- tiny-price handling (auto log) --------
-                is_tiny = pd.to_numeric(vis["close"], errors="coerce").median() < 0.01
-                if is_tiny:
-                    # Replace zeros with NaN to satisfy log scale
+                # -------- Auto-rescale to µUSD for micro-priced assets --------
+                y_min, y_max = vis["low"].min(), vis["high"].max()
+                rescale = (pd.to_numeric(y_max, errors="coerce") < 0.01)
+                if rescale:
                     for c in ["open", "high", "low", "close"]:
-                        vis[c] = pd.to_numeric(vis[c], errors="coerce").replace(0, np.nan)
+                        vis[c] = pd.to_numeric(vis[c], errors="coerce") * 1e6
+                    ylabel = "Price (µUSD)"
+                else:
+                    ylabel = "Price (USD)"
 
-                def fmt(v, decimals=8):
+                def fmt(v, decimals=6):
                     try:
                         return f"{float(v):.{decimals}f}"
                     except (ValueError, TypeError):
@@ -354,10 +357,10 @@ with tab1:
 
                 hovertext = [
                     f"📅 {row['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}"
-                    + f"<br>Open: ${fmt(row['open'])}"
-                    + f"<br>High: ${fmt(row['high'])}"
-                    + f"<br>Low: ${fmt(row['low'])}"
-                    + f"<br>Close: ${fmt(row['close'])}"
+                    + f"<br>Open: {fmt(row['open'])}"
+                    + f"<br>High: {fmt(row['high'])}"
+                    + f"<br>Low: {fmt(row['low'])}"
+                    + f"<br>Close: {fmt(row['close'])}"
                     + f"<br><b>P-Up: {fmt(row.get('p_up'))}</b>"
                     + f"<br><b>P-Down: {fmt(row.get('p_down'))}</b>"
                     for _, row in vis.iterrows()
@@ -365,24 +368,20 @@ with tab1:
 
                 fig = go.Figure()
                 fig.add_trace(go.Candlestick(
-                    x=vis["timestamp"],
-                    open=vis["open"], high=vis["high"], low=vis["low"], close=vis["close"],
-                    name=selected_asset,
-                    text=hovertext,
-                    hoverinfo="text"
+                    x=vis["timestamp"], open=vis["open"], high=vis["high"], low=vis["low"], close=vis["close"],
+                    name=selected_asset, text=hovertext, hoverinfo="text"
                 ))
 
-                # ---- Overlay trades (price>0 if log) ----
+                # ---- Trades overlay (scale markers if needed) ----
                 if not trades_df.empty:
                     asset_trades = trades_df[
                         (trades_df["asset"] == selected_asset) &
                         (trades_df["timestamp"] >= start_date) &
                         (trades_df["timestamp"] <= end_date)
                     ].copy()
-                    if is_tiny:
-                        asset_trades = asset_trades[asset_trades["price"] > 0]
-
                     if not asset_trades.empty:
+                        if rescale:
+                            asset_trades["price"] = pd.to_numeric(asset_trades["price"], errors="coerce") * 1e6
                         buys = asset_trades[asset_trades["action"] == "buy"]
                         sells = asset_trades[asset_trades["action"] == "sell"]
                         if not buys.empty:
@@ -396,29 +395,10 @@ with tab1:
                                 name="SELL", marker=dict(symbol="triangle-down", size=10, color="red")
                             ))
 
-                # ---- Y-axis config
-                yaxis_kwargs = dict(title="Price (USD)")
-                if is_tiny:
-                    lo = np.nanmin(pd.to_numeric(vis["low"], errors="coerce").values)
-                    hi = np.nanmax(pd.to_numeric(vis["high"], errors="coerce").values)
-                    lo = max(lo * 0.9, 1e-12) if np.isfinite(lo) else 1e-12
-                    hi = hi * 1.1 if np.isfinite(hi) else 1
-                    yaxis_kwargs.update(dict(
-                        type="log",
-                        tickformat=".3e",
-                        range=[np.log10(lo), np.log10(hi)]
-                    ))
-                else:
-                    yaxis_kwargs.update(dict(tickformat=".6f"))
-
                 fig.update_layout(
-                    template="plotly_white",
-                    xaxis_rangeslider_visible=False,
-                    hovermode="x unified",
-                    yaxis=yaxis_kwargs,
-                    title=f"{selected_asset} — Price & Trades",
-                    legend=dict(orientation="h", y=1.03, x=0.5, xanchor="center"),
-                    height=600,
+                    template="plotly_white", xaxis_rangeslider_visible=False, hovermode="x unified",
+                    yaxis_title=ylabel, title=f"{selected_asset} — Price & Trades",
+                    legend=dict(orientation="h", y=1.03, x=0.5, xanchor="center"), height=600,
                     margin=dict(l=40, r=20, t=60, b=40),
                 )
                 st.plotly_chart(fig, use_container_width=True)
