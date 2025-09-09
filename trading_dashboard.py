@@ -13,9 +13,9 @@ from datetime import timedelta
 TRADES_LINK = "https://drive.google.com/file/d/1zSdFcG4Xlh_iSa180V6LRSeEucAokXYk/view?usp=drive_link"
 MARKET_LINK = "https://drive.google.com/file/d/1tvY7CheH_p5f3uaE7VPUYS78hDHNmX_C/view?usp=sharing"  # OHLCV + probs (CSV)
 
-st.set_page_config(page_title="Trading Analytics — Multi-Asset (CSV)", layout="wide")
+st.set_page_config(page_title="Trading Analytics — Unified GIGA (CSV)", layout="wide")
 LOCAL_TZ = "America/Los_Angeles"
-DEFAULT_ASSET = "GIGA-USD"  # we’ll default to this if it exists
+DEFAULT_ASSET = "GIGA-USD"  # canonical name for GIGA only
 
 # =========================
 # Helpers
@@ -52,7 +52,7 @@ def extract_drive_id(url_or_id: str) -> str:
 
 def _drive_confirm_download(session: requests.Session, file_id: str) -> bytes:
     """
-    Handle Google Drive's big-file confirm/scan page by extracting the confirm token.
+    Handle Google Drive's big-file confirm page by extracting the confirm token.
     Returns raw file bytes.
     """
     base = "https://drive.google.com/uc?export=download"
@@ -145,6 +145,36 @@ def read_csv_best_effort(raw: bytes, label: str) -> pd.DataFrame | None:
     st.error(f"Failed to parse {label} as CSV even with fallbacks.")
     return None
 
+# ---------- ONLY GIGA gets unified; others stay untouched ----------
+def unify_symbol(val: str) -> str:
+    """
+    Canonicalize asset/product_id names:
+    - Any entry that contains 'GIGA' (case/underscore insensitive) => 'GIGA-USD'
+    - Everything else (LCX-USD, MNDE-USD, MOG-USD, VVV-USD, CVX*, etc.) is returned EXACTLY as-is.
+    """
+    if not isinstance(val, str):
+        return val
+    s = val.strip()
+    # Only use uppercase/underscore replacement for detection; we return original unless it's GIGA
+    s_upper = s.upper().replace("_", "-")
+    if "GIGA" in s_upper:
+        return "GIGA-USD"
+    return s  # unchanged for non-GIGA
+
+def normalize_prob_columns(df: pd.DataFrame) -> pd.DataFrame:
+    rename_map = {}
+    for c in list(df.columns):
+        cl = c.lower()
+        if cl in {"p_up", "p-up", "pup", "prob_up", "p_up_prob", "puprob"}:
+            rename_map[c] = "p_up"
+        if cl in {"p_down", "p-down", "pdown", "prob_down", "p_down_prob", "pdownprob"}:
+            rename_map[c] = "p_down"
+    if rename_map:
+        df = df.rename(columns=rename_map)
+    if "p_up" not in df.columns: df["p_up"] = np.nan
+    if "p_down" not in df.columns: df["p_down"] = np.nan
+    return df
+
 def calculate_pnl_and_metrics(trades_df):
     if trades_df is None or trades_df.empty:
         return {}, pd.DataFrame(), {}
@@ -202,21 +232,30 @@ def calculate_pnl_and_metrics(trades_df):
 # =========================
 @st.cache_data(ttl=600)
 def load_data():
+    # Download raw bytes
     raw_trades = download_drive_csv_bytes(TRADES_LINK)
     raw_market = download_drive_csv_bytes(MARKET_LINK)
 
+    # Parse CSVs
     trades = read_csv_best_effort(raw_trades, "Trades CSV")
     market = read_csv_best_effort(raw_market, "Market CSV")
 
     # Normalize trades
     if trades is not None and not trades.empty:
         trades = lower_strip_cols(trades)
+
+        # Choose the identifier column and rename to 'asset'
         if "product_id" in trades.columns and "asset" not in trades.columns:
             trades = trades.rename(columns={"product_id": "asset"})
+        # Normalize core columns
         trades = trades.rename(columns={"side": "action", "size": "quantity"})
+        # Canonicalize asset names (unify only GIGA -> GIGA-USD)
+        trades["asset"] = trades["asset"].apply(unify_symbol)
+        # Timestamps
         trades["timestamp"] = to_local_naive(trades["timestamp"])
         if "action" in trades.columns:
             trades["action"] = trades["action"].str.lower()
+
         need = ["timestamp", "asset", "action", "price", "quantity"]
         if not all(c in trades.columns for c in need):
             st.error(f"Trades CSV missing columns: {need}")
@@ -225,27 +264,19 @@ def load_data():
     # Normalize market (OHLCV + probabilities)
     if market is not None and not market.empty:
         market = lower_strip_cols(market)
+
         if "product_id" in market.columns and "asset" not in market.columns:
             market = market.rename(columns={"product_id": "asset"})
+        # Canonicalize asset names (unify only GIGA -> GIGA-USD)
+        market["asset"] = market["asset"].apply(unify_symbol)
+
         need_m = ["timestamp", "asset", "open", "high", "low", "close"]
         if not all(c in market.columns for c in need_m):
             st.error(f"Market CSV missing columns: {need_m}")
             market = None
         else:
             market["timestamp"] = to_local_naive(market["timestamp"])
-            # Standardize probability column names if present
-            rename_map = {}
-            for c in list(market.columns):
-                cl = c.lower()
-                if cl in {"p_up", "p-up", "pup", "prob_up", "p_up_prob", "puprob"}:
-                    rename_map[c] = "p_up"
-                if cl in {"p_down", "p-down", "pdown", "prob_down", "p_down_prob", "pdownprob"}:
-                    rename_map[c] = "p_down"
-            if rename_map:
-                market = market.rename(columns=rename_map)
-            if "p_up" not in market.columns: market["p_up"] = np.nan
-            if "p_down" not in market.columns: market["p_down"] = np.nan
-
+            market = normalize_prob_columns(market)
             # Ensure numeric OHLC
             for col in ["open", "high", "low", "close"]:
                 market[col] = pd.to_numeric(market[col], errors="coerce")
@@ -260,8 +291,8 @@ def load_data():
 
 trades_df, pnl_summary, summary_stats, market_df = load_data()
 
-st.markdown("## Trading Analytics — Multi-Asset (CSV)")
-st.caption("Pick an asset. Hover candles for P-Up / P-Down. If you see ‘—’, those columns weren’t present on that row.")
+st.markdown("## Trading Analytics — Unified GIGA")
+st.caption("Only GIGA variants are collapsed into `GIGA-USD`. LCX-USD, MNDE-USD, MOG-USD, VVV-USD stay untouched.")
 
 # =========================
 # UI: Asset + Range
@@ -273,7 +304,7 @@ else:
     if not assets:
         st.error("No assets found in Market CSV.")
     else:
-        # Prefer DEFAULT_ASSET if present
+        # Prefer GIGA-USD if present
         default_index = 0
         if DEFAULT_ASSET in assets:
             default_index = assets.index(DEFAULT_ASSET)
