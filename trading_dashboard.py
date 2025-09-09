@@ -5,7 +5,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from datetime import timedeltaimport io
+from datetime import timedelta
 import re
 import requests
 import streamlit as st
@@ -602,4 +602,5 @@ if trades_df is not None and not trades_df.empty:
     fig_pnl.add_trace(go.Scatter(x=sells["timestamp"], y=sells["cumulative_pnl"], mode="markers", name="Sells"))
     fig_pnl.update_layout(template="plotly_white", xaxis_rangeslider_visible=True)
     st.plotly_chart(fig_pnl, use_container_width=True)
+
 
