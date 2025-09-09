@@ -219,8 +219,6 @@ trades_df, pnl_summary, summary_stats, market_df = load_data(trades_link_input, 
 # --- Sidebar Positions Status ---
 st.sidebar.markdown("---")
 st.sidebar.markdown("### Positions Status")
-
-# THIS IS THE FIX: Only run this section if market_df was loaded successfully.
 if market_df is not None and not market_df.empty:
     open_positions_df = calculate_open_positions(trades_df, market_df)
     
@@ -270,8 +268,31 @@ with tab1:
         if vis.empty:
             st.warning("No market data in the selected date range for this asset.")
         else:
+            # =================================================================
+            # FIX IS HERE: Re-introduce custom hover text for P-Up/P-Down
+            # =================================================================
+            def fmt(v, decimals=4):
+                try: return f"{float(v):.{decimals}f}"
+                except (ValueError, TypeError): return "—"
+
+            hovertext = [
+                f"📅 {row['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}"
+                + f"<br>Open: ${fmt(row['open'])}"
+                + f"<br>High: ${fmt(row['high'])}"
+                + f"<br>Low: ${fmt(row['low'])}"
+                + f"<br>Close: ${fmt(row['close'])}"
+                + f"<br><b>P-Up: {fmt(row.get('p_up'))}</b>"
+                + f"<br><b>P-Down: {fmt(row.get('p_down'))}</b>"
+                for _, row in vis.iterrows()
+            ]
+            
             fig = go.Figure()
-            fig.add_trace(go.Candlestick(x=vis["timestamp"], open=vis["open"], high=vis["high"], low=vis["low"], close=vis["close"], name=selected_asset))
+            fig.add_trace(go.Candlestick(
+                x=vis["timestamp"], open=vis["open"], high=vis["high"], low=vis["low"], close=vis["close"],
+                name=selected_asset,
+                text=hovertext, # Use the custom text
+                hoverinfo="text" # Tell Plotly to only show our custom text
+            ))
             
             if trades_df is not None:
                 asset_trades = trades_df[(trades_df["asset"] == selected_asset) & (trades_df["timestamp"] >= start_date) & (trades_df["timestamp"] <= end_date)]
