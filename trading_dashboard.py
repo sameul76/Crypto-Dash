@@ -18,7 +18,7 @@ DEFAULT_ASSET = "GIGA-USD"
 # HARDCODED FILE LINKS
 # =========================
 TRADES_LINK = "https://drive.google.com/file/d/1zSdFcG4Xlh_iSa180V6LRSeEucAokXYk/view?usp=sharing"
-MARKET_LINK = "https://drive.google.com/file/d/1tvY7CheH_p5f3uaE7VPUYS78hDHNmX_C/view?usp=sharing"
+MARKET_LINK = "https://drive.google.com/file/d/16ncQ1gV1X0BlpDtixXswe5Btcw2wJDf_/view?usp=sharing"
 
 # =========================
 # Helper Functions (Data Processing)
@@ -328,3 +328,4 @@ with tab2:
                 fig_pnl.add_trace(go.Scatter(x=pnl_data["timestamp"], y=pnl_data[pnl_col], mode="lines", name="Cumulative P&L"))
                 fig_pnl.update_layout(title=title, template="plotly_white", yaxis_title="P&L (USD)")
                 st.plotly_chart(fig_pnl, use_container_width=True)
+
