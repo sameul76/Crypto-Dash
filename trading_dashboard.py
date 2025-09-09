@@ -13,7 +13,7 @@ from datetime import timedelta
 TRADES_LINK = "https://drive.google.com/file/d/1zSdFcG4Xlh_iSa180V6LRSeEucAokXYk/view?usp=drive_link"
 MARKET_LINK = "https://drive.google.com/file/d/1tvY7CheH_p5f3uaE7VPUYS78hDHNmX_C/view?usp=sharing"  # OHLCV + probs (CSV)
 
-st.set_page_config(page_title="Trading Analytics — Unified GIGA (CSV)", layout="wide")
+st.set_page_config(page_title="Trading Analytics — Candles + Trades", layout="wide")
 LOCAL_TZ = "America/Los_Angeles"
 DEFAULT_ASSET = "GIGA-USD"  # canonical name for GIGA only
 
@@ -155,11 +155,10 @@ def unify_symbol(val: str) -> str:
     if not isinstance(val, str):
         return val
     s = val.strip()
-    # Only use uppercase/underscore replacement for detection; we return original unless it's GIGA
     s_upper = s.upper().replace("_", "-")
     if "GIGA" in s_upper:
         return "GIGA-USD"
-    return s  # unchanged for non-GIGA
+    return s
 
 def normalize_prob_columns(df: pd.DataFrame) -> pd.DataFrame:
     rename_map = {}
@@ -256,6 +255,14 @@ def load_data():
         if "action" in trades.columns:
             trades["action"] = trades["action"].str.lower()
 
+        # numeric fields for plotting info
+        if "quantity" in trades.columns:
+            trades["quantity"] = pd.to_numeric(trades["quantity"], errors="coerce")
+        if "price" in trades.columns:
+            trades["price"] = pd.to_numeric(trades["price"], errors="coerce")
+        if "usd_value" in trades.columns:
+            trades["usd_value"] = pd.to_numeric(trades["usd_value"], errors="coerce")
+
         need = ["timestamp", "asset", "action", "price", "quantity"]
         if not all(c in trades.columns for c in need):
             st.error(f"Trades CSV missing columns: {need}")
@@ -291,8 +298,8 @@ def load_data():
 
 trades_df, pnl_summary, summary_stats, market_df = load_data()
 
-st.markdown("## Trading Analytics — Unified GIGA")
-st.caption("Only GIGA variants are collapsed into `GIGA-USD`. LCX-USD, MNDE-USD, MOG-USD, VVV-USD stay untouched.")
+st.markdown("## Trading Analytics — Candles + Trades")
+st.caption("Select an asset. Candlesticks show P-Up / P-Down in hover. BUY/SELL markers come from the Trades CSV.")
 
 # =========================
 # UI: Asset + Range
@@ -305,9 +312,7 @@ else:
         st.error("No assets found in Market CSV.")
     else:
         # Prefer GIGA-USD if present
-        default_index = 0
-        if DEFAULT_ASSET in assets:
-            default_index = assets.index(DEFAULT_ASSET)
+        default_index = assets.index(DEFAULT_ASSET) if DEFAULT_ASSET in assets else 0
         selected_asset = st.selectbox("Asset", assets, index=default_index)
 
         colA, colB = st.columns([3, 1])
@@ -330,6 +335,7 @@ else:
 
             vis = df[(df["timestamp"] >= start_date) & (df["timestamp"] <= end_date)].copy()
 
+            # ---- Build custom hover for candles
             def fmt4(v):
                 try:
                     return f"{float(v):.4f}"
@@ -347,6 +353,7 @@ else:
                 for _, row in vis.iterrows()
             ]
 
+            # ---- Base candlestick
             fig = go.Figure()
             fig.add_trace(go.Candlestick(
                 x=vis["timestamp"],
@@ -355,18 +362,80 @@ else:
                 text=hovertext,
                 hoverinfo="text"
             ))
+
+            # ---- Overlay trades for the selected asset
+            asset_trades = pd.DataFrame()
+            if trades_df is not None and not trades_df.empty:
+                asset_trades = trades_df[trades_df["asset"] == selected_asset].copy()
+                # keep only trades in the visible date range
+                asset_trades = asset_trades[
+                    (asset_trades["timestamp"] >= start_date) & (asset_trades["timestamp"] <= end_date)
+                ].sort_values("timestamp")
+
+            if not asset_trades.empty:
+                buys = asset_trades[asset_trades["action"] == "buy"]
+                sells = asset_trades[asset_trades["action"] == "sell"]
+
+                # Helpful hover text for trades
+                def trade_hover(df_):
+                    h = []
+                    for _, r in df_.iterrows():
+                        parts = [
+                            "📅 " + r["timestamp"].strftime("%Y-%m-%d %H:%M:%S"),
+                            f"Price: ${fmt4(r.get('price'))}",
+                        ]
+                        if "quantity" in r and pd.notna(r["quantity"]):
+                            parts.append(f"Size: {fmt4(r['quantity'])}")
+                        if "usd_value" in r and pd.notna(r["usd_value"]):
+                            try:
+                                parts.append(f"USD: ${float(r['usd_value']):,.2f}")
+                            except Exception:
+                                pass
+                        if "model" in r and isinstance(r["model"], str):
+                            parts.append(f"Model: {r['model']}")
+                        if "asset" in r and isinstance(r["asset"], str):
+                            parts.append(f"Asset: {r['asset']}")
+                        h.append("<br>".join(parts))
+                    return h
+
+                if not buys.empty:
+                    fig.add_trace(go.Scatter(
+                        x=buys["timestamp"],
+                        y=buys["price"],
+                        mode="markers",
+                        name="BUY",
+                        marker=dict(symbol="triangle-up", size=12, line=dict(width=1, color="black")),
+                        marker_color="green",
+                        hoverinfo="text",
+                        text=trade_hover(buys),
+                    ))
+
+                if not sells.empty:
+                    fig.add_trace(go.Scatter(
+                        x=sells["timestamp"],
+                        y=sells["price"],
+                        mode="markers",
+                        name="SELL",
+                        marker=dict(symbol="triangle-down", size=12, line=dict(width=1, color="black")),
+                        marker_color="red",
+                        hoverinfo="text",
+                        text=trade_hover(sells),
+                    ))
+            else:
+                st.info("No trades for this asset in the selected range.")
+
+            # ---- Layout
             fig.update_layout(
                 template="plotly_white",
                 xaxis_rangeslider_visible=True,
                 hovermode="x unified",
                 yaxis_title="Price (USD)",
-                title=f"{selected_asset} — Price & Probabilities",
+                title=f"{selected_asset} — Price, Probabilities & Trades",
+                legend=dict(orientation="h", y=1.03, x=0.5, xanchor="center"),
             )
             st.plotly_chart(fig, use_container_width=True)
 
-# =========================
-# (Optional) quick P&L line
-# =========================
+# (Optional) simple portfolio P&L view still available if you want it
 if trades_df is not None and not trades_df.empty:
     st.markdown("### Portfolio P&L (Quick View)")
     buys = trades_df[trades_df["action"] == "buy"]
