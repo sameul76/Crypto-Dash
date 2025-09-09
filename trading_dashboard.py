@@ -8,13 +8,14 @@ import plotly.graph_objects as go
 from datetime import timedelta
 
 # =========================
-# HARD-CODED FILE LINKS (your two CSVs)
+# HARD-CODED FILE LINKS (two CSVs)
 # =========================
 TRADES_LINK = "https://drive.google.com/file/d/1zSdFcG4Xlh_iSa180V6LRSeEucAokXYk/view?usp=drive_link"
 MARKET_LINK = "https://drive.google.com/file/d/1tvY7CheH_p5f3uaE7VPUYS78hDHNmX_C/view?usp=sharing"  # OHLCV + probs (CSV)
 
-st.set_page_config(page_title="Trading Analytics — CSV x2", layout="wide")
+st.set_page_config(page_title="Trading Analytics — Multi-Asset (CSV)", layout="wide")
 LOCAL_TZ = "America/Los_Angeles"
+DEFAULT_ASSET = "GIGA-USD"  # we’ll default to this if it exists
 
 # =========================
 # Helpers
@@ -41,7 +42,7 @@ def extract_drive_id(url_or_id: str) -> str:
     if not url_or_id:
         return ""
     s = url_or_id.strip()
-    if re.fullmatch(r"[A-Za-z0-9_-]{20,}", s):  # looks like a file id already
+    if re.fullmatch(r"[A-Za-z0-9_-]{20,}", s):  # looks like a file id
         return s
     m = re.search(r"/d/([A-Za-z0-9_-]{20,})", s)
     if m: return m.group(1)
@@ -51,7 +52,7 @@ def extract_drive_id(url_or_id: str) -> str:
 
 def _drive_confirm_download(session: requests.Session, file_id: str) -> bytes:
     """
-    Handle Google Drive's big-file warning/virus-scan page by extracting the confirm token.
+    Handle Google Drive's big-file confirm/scan page by extracting the confirm token.
     Returns raw file bytes.
     """
     base = "https://drive.google.com/uc?export=download"
@@ -60,12 +61,10 @@ def _drive_confirm_download(session: requests.Session, file_id: str) -> bytes:
     r1 = session.get(base, params=params, stream=True, timeout=60, headers=headers)
     r1.raise_for_status()
 
-    # If content-type isn't HTML, we likely have the file already
     ctype = (r1.headers.get("Content-Type") or "").lower()
     if "text/html" not in ctype:
         return r1.content
 
-    # Otherwise parse confirm token from HTML or cookie
     html = r1.text
     token = None
     m = re.search(r"confirm=([0-9A-Za-z_-]+)", html)
@@ -83,8 +82,7 @@ def _drive_confirm_download(session: requests.Session, file_id: str) -> bytes:
         r2.raise_for_status()
         return r2.content
 
-    # If we still don't have a token, just return what we got (will be caught as HTML by parser)
-    return r1.content
+    return r1.content  # will be detected as HTML later if not the file
 
 def download_drive_csv_bytes(url_or_id: str) -> bytes | None:
     """Robustly download Drive file bytes (handles big-file confirm); returns raw bytes or None."""
@@ -95,7 +93,6 @@ def download_drive_csv_bytes(url_or_id: str) -> bytes | None:
         with requests.Session() as s:
             return _drive_confirm_download(s, fid)
     except Exception:
-        # Last-resort simple path
         try:
             url = f"https://drive.google.com/uc?export=download&id={fid}"
             r = requests.get(url, stream=True, timeout=60, headers={"User-Agent": "Mozilla/5.0"})
@@ -117,10 +114,9 @@ def read_csv_best_effort(raw: bytes, label: str) -> pd.DataFrame | None:
         return None
 
     if _looks_like_html(raw):
-        # Show user that Drive returned a web page, not a CSV
-        st.error(f"Google Drive returned HTML for {label} (likely a permissions or big-file confirm issue).")
+        st.error(f"Google Drive returned HTML for {label} (permissions or big-file confirm). "
+                 f"Set it to 'Anyone with the link: Viewer'.")
         try:
-            # Attempt to extract any visible tables for debugging
             tables = pd.read_html(io.BytesIO(raw))
             if tables:
                 st.caption("Preview of what Drive returned (first table):")
@@ -264,20 +260,24 @@ def load_data():
 
 trades_df, pnl_summary, summary_stats, market_df = load_data()
 
-st.markdown("## Trading Analytics — CSV x2")
-st.caption("Hover candles to see P-Up / P-Down. If you see ‘—’, those columns weren’t present for that row.")
+st.markdown("## Trading Analytics — Multi-Asset (CSV)")
+st.caption("Pick an asset. Hover candles for P-Up / P-Down. If you see ‘—’, those columns weren’t present on that row.")
 
 # =========================
-# Chart
+# UI: Asset + Range
 # =========================
 if market_df is None or market_df.empty:
-    st.error("Couldn’t load the market CSV. Make sure it’s shared as ‘Anyone with the link: Viewer’.")
+    st.error("Couldn’t load the Market CSV. Make sure it’s shared as ‘Anyone with the link: Viewer’.")
 else:
-    assets = sorted(market_df["asset"].dropna().unique())
+    assets = sorted(market_df["asset"].dropna().unique().tolist())
     if not assets:
         st.error("No assets found in Market CSV.")
     else:
-        selected_asset = st.selectbox("Asset", assets, index=0)
+        # Prefer DEFAULT_ASSET if present
+        default_index = 0
+        if DEFAULT_ASSET in assets:
+            default_index = assets.index(DEFAULT_ASSET)
+        selected_asset = st.selectbox("Asset", assets, index=default_index)
 
         colA, colB = st.columns([3, 1])
         with colB:
@@ -320,7 +320,7 @@ else:
             fig.add_trace(go.Candlestick(
                 x=vis["timestamp"],
                 open=vis["open"], high=vis["high"], low=vis["low"], close=vis["close"],
-                name="Price",
+                name=selected_asset,
                 text=hovertext,
                 hoverinfo="text"
             ))
