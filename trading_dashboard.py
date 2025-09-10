@@ -5,7 +5,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from datetime import timedelta
+from datetime import datetime, timedelta
 # Note: Reading Parquet files with pandas requires the 'pyarrow' library.
 # You may need to install it: pip install pyarrow
 import pyarrow
@@ -32,16 +32,22 @@ def lower_strip_cols(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 def to_local_naive(ts):
+    # Try converting assuming it's already a datetime object
     s = pd.to_datetime(ts, errors="coerce")
     try:
         if s.dt.tz is not None:
             s = s.dt.tz_convert(LOCAL_TZ).dt.tz_localize(None)
     except Exception:
+        # If that fails, it might be a Unix timestamp (numeric)
         try:
-            s = s.dt.tz_localize("UTC").dt.tz_convert(LOCAL_TZ).dt.tz_localize(None)
+             s = pd.to_datetime(ts, unit='s', errors='coerce').dt.tz_localize('UTC').dt.tz_convert(LOCAL_TZ).dt.tz_localize(None)
         except Exception:
-            s = s.dt.tz_localize(None)
+            try:
+                s = s.dt.tz_localize("UTC").dt.tz_convert(LOCAL_TZ).dt.tz_localize(None)
+            except Exception:
+                s = s.dt.tz_localize(None)
     return s
+
 
 def unify_symbol(val: str) -> str:
     """Unify GIGA-like ids to GIGA-USD; leave everything else untouched."""
@@ -243,7 +249,9 @@ def load_data(trades_link, market_link):
         if "product_id" in trades.columns:
             trades = trades.rename(columns={"product_id": "asset"})
         trades = trades.rename(columns={"side": "action", "size": "quantity"})
-        trades["asset"] = trades["asset"].apply(unify_symbol)
+        # IMPORTANT: Convert Unix timestamp (float) to datetime
+        if 'timestamp' in trades.columns and pd.api.types.is_numeric_dtype(trades['timestamp']):
+             trades['timestamp'] = pd.to_datetime(trades['timestamp'], unit='s', errors='coerce')
         trades["timestamp"] = to_local_naive(trades["timestamp"])
         if "action" in trades.columns:
             trades["action"] = trades["action"].str.lower()
@@ -326,6 +334,25 @@ if not market_df.empty:
     selected_asset = st.sidebar.selectbox("Select Asset", assets, index=default_index)
     range_choice = st.sidebar.selectbox("Select Date Range", ["30 days", "7 days", "1 day", "All"], index=0)
 
+# --- NEW: Sidebar Date Range Display ---
+if not trades_df.empty and 'timestamp' in trades_df.columns:
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("###  Trade File Date Range")
+    min_date = trades_df['timestamp'].min()
+    max_date = trades_df['timestamp'].max()
+    if pd.notna(min_date) and pd.notna(max_date):
+        st.sidebar.success(
+            f"**Earliest Trade:**\n\n{min_date.strftime('%Y-%m-%d')}\n\n"
+            f"**Latest Trade:**\n\n{max_date.strftime('%Y-%m-%d')}"
+        )
+    else:
+        st.sidebar.warning("Could not determine the date range.")
+
+# --- NEW: Sidebar Last Updated Time ---
+st.sidebar.markdown("---")
+st.sidebar.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+
 # --- Tabs ---
 tab1, tab2 = st.tabs(["📈 Candlestick Analysis", "💰 P&L Analysis"])
 
@@ -386,6 +413,7 @@ with tab1:
                 ))
 
                 # ---- Trades overlay (scale markers if needed) ----
+                asset_trades = pd.DataFrame() # Initialize empty DataFrame
                 if not trades_df.empty:
                     asset_trades = trades_df[
                         (trades_df["asset"] == selected_asset) &
@@ -415,6 +443,17 @@ with tab1:
                     margin=dict(l=40, r=20, t=60, b=40),
                 )
                 st.plotly_chart(fig, use_container_width=True)
+
+                # --- Debugging Expander ---
+                with st.expander("Debug: View Filtered Trade Data for Chart"):
+                    st.write(f"The table below shows the trade data being used to plot markers for **{selected_asset}** between **{start_date.strftime('%Y-%m-%d')}** and **{end_date.strftime('%Y-%m-%d')}**.")
+                    if asset_trades.empty:
+                        st.warning("No trades were found for the current asset and date range.")
+                        st.write("Full (unfiltered) trade data loaded:")
+                        st.dataframe(trades_df)
+                    else:
+                        st.dataframe(asset_trades)
+
 
 with tab2:
     if trades_df is None or trades_df.empty:
