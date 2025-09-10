@@ -32,26 +32,20 @@ def lower_strip_cols(df: pd.DataFrame) -> pd.DataFrame:
     out.columns = [c.lower().strip() for c in out.columns]
     return out
 
-# --- NEW: Robust Timezone Conversion Function ---
 def to_local_naive(series: pd.Series) -> pd.Series:
     """
     Converts a pandas Series of timestamps to naive local time objects.
     Handles numeric (Unix), naive datetime, and aware datetime formats.
     """
-    # First, convert any numeric types (like Unix timestamps) to datetime objects
     if pd.api.types.is_numeric_dtype(series):
         series = pd.to_datetime(series, unit='s', errors='coerce')
     else:
         series = pd.to_datetime(series, errors='coerce')
 
-    # Now, handle timezone conversion
     if series.dt.tz is None:
-        # If naive, assume UTC, convert to local, then remove tz info
         return series.dt.tz_localize('UTC').dt.tz_convert(LOCAL_TZ).dt.tz_localize(None)
     else:
-        # If already has a timezone, just convert to local and remove tz info
         return series.dt.tz_convert(LOCAL_TZ).dt.tz_localize(None)
-
 
 def unify_symbol(val: str) -> str:
     """Unify GIGA-like ids to GIGA-USD; leave everything else untouched."""
@@ -63,24 +57,35 @@ def unify_symbol(val: str) -> str:
         return "GIGA-USD"
     return s
 
+# --- NEW: More Robust Probability Column Normalization ---
 def normalize_prob_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Finds and standardizes column names for 'p_up' and 'p_down' probabilities.
+    Handles various naming conventions and capitalization.
+    """
     rename_map = {}
-    for c in list(df.columns):
-        cl = c.lower()
-        if cl in {"p_up", "p-up", "pup", "prob_up", "p_up_prob", "puprob"}:
-            rename_map[c] = "p_up"
-        if cl in {"p_down", "p-down", "pdown", "prob_down", "p_down_prob", "pdownprob"}:
-            rename_map[c] = "p_down"
+    p_up_variations = {"p_up", "p-up", "pup", "prob_up", "p_up_prob", "puprob", "p up"}
+    p_down_variations = {"p_down", "p-down", "pdown", "prob_down", "p_down_prob", "pdownprob", "p down"}
+
+    for col in df.columns:
+        col_lower = col.lower().replace("_", " ").replace("-", " ")
+        if col_lower in p_up_variations:
+            rename_map[col] = "p_up"
+        elif col_lower in p_down_variations:
+            rename_map[col] = "p_down"
+
     if rename_map:
         df = df.rename(columns=rename_map)
+
+    # Ensure columns exist, even if empty, to prevent errors
     if "p_up" not in df.columns:
         df["p_up"] = np.nan
     if "p_down" not in df.columns:
         df["p_down"] = np.nan
+        
     return df
 
 def calculate_pnl_and_metrics(trades_df):
-    """Realized P&L on sells vs avg cost; returns (per_asset dict, enriched df, stats)."""
     if trades_df is None or trades_df.empty:
         return {}, pd.DataFrame(), {}
     pnl_per_asset, positions = {}, {}
@@ -88,34 +93,30 @@ def calculate_pnl_and_metrics(trades_df):
     df["timestamp"] = pd.to_datetime(df["timestamp"])
     df = df.sort_values("timestamp").reset_index(drop=True)
     df["pnl"], df["cumulative_pnl"] = 0.0, 0.0
-    total = 0.0
-    win = loss = 0
-    gp = gl = 0.0
-    peak = mdd = 0.0
+    total, win, loss, gp, gl, peak, mdd = 0.0, 0, 0, 0.0, 0.0, 0.0, 0.0
 
     for i, row in df.iterrows():
-        asset, action = row["asset"], row["action"]
-        price, qty = float(row["price"]), float(row["quantity"])
+        asset, action, price, qty = row["asset"], row["action"], float(row["price"]), float(row["quantity"])
         if asset not in positions:
             positions[asset] = {"quantity": 0.0, "cost": 0.0}
             pnl_per_asset[asset] = 0.0
+        
         cur = 0.0
         if action == "buy":
             positions[asset]["cost"] += qty * price
             positions[asset]["quantity"] += qty
         elif action == "sell" and positions[asset]["quantity"] > 0:
-            avg = positions[asset]["cost"] / max(positions[asset]["quantity"], 1e-12)
+            avg_cost = positions[asset]["cost"] / max(positions[asset]["quantity"], 1e-12)
             trade_qty = min(qty, positions[asset]["quantity"])
-            realized = (price - avg) * trade_qty
+            realized = (price - avg_cost) * trade_qty
             pnl_per_asset[asset] += realized
             total += realized
             cur = realized
-            if realized > 0:
-                win += 1; gp += realized
-            else:
-                loss += 1; gl += abs(realized)
-            positions[asset]["cost"] -= avg * trade_qty
+            if realized > 0: win += 1; gp += realized
+            else: loss += 1; gl += abs(realized)
+            positions[asset]["cost"] -= avg_cost * trade_qty
             positions[asset]["quantity"] -= trade_qty
+        
         df.loc[i, "pnl"] = cur
         df.loc[i, "cumulative_pnl"] = total
         peak = max(peak, total)
@@ -125,44 +126,37 @@ def calculate_pnl_and_metrics(trades_df):
     stats = {
         "win_rate": (win / closed * 100) if closed else 0,
         "profit_factor": (gp / gl) if gl > 0 else float("inf"),
-        "total_trades": closed,
-        "avg_win": (gp / win) if win else 0,
-        "avg_loss": (gl / loss) if loss else 0,
-        "max_drawdown": mdd,
+        "total_trades": closed, "avg_win": (gp / win) if win else 0,
+        "avg_loss": (gl / loss) if loss else 0, "max_drawdown": mdd,
     }
     df["asset_cumulative_pnl"] = df.groupby("asset")["pnl"].cumsum()
     return pnl_per_asset, df, stats
 
 def calculate_open_positions(trades_df, market_df):
-    """Naive open-position tracker and unrealized P&L snapshot from latest market close."""
     if trades_df is None or trades_df.empty or market_df is None or market_df.empty:
         return pd.DataFrame()
-
     positions = {}
     for _, row in trades_df.sort_values("timestamp").iterrows():
-        asset, action = row["asset"], row["action"]
-        qty, price = float(row["quantity"]), float(row["price"])
-        if asset not in positions:
-            positions[asset] = {"quantity": 0.0, "cost": 0.0}
+        asset, action, qty, price = row["asset"], row["action"], float(row["quantity"]), float(row["price"])
+        if asset not in positions: positions[asset] = {"quantity": 0.0, "cost": 0.0}
         if action == "buy":
             positions[asset]["cost"] += qty * price
             positions[asset]["quantity"] += qty
         elif action == "sell" and positions[asset]["quantity"] > 0:
-            avg_cost_per_unit = positions[asset]["cost"] / max(positions[asset]["quantity"], 1e-12)
-            positions[asset]["cost"] -= qty * avg_cost_per_unit
+            avg_cost = positions[asset]["cost"] / max(positions[asset]["quantity"], 1e-12)
+            positions[asset]["cost"] -= qty * avg_cost
             positions[asset]["quantity"] -= qty
     
     open_positions = []
     for asset, data in positions.items():
         if data["quantity"] > 1e-9:
-            latest_market_data = market_df[market_df['asset'] == asset]
-            if not latest_market_data.empty:
-                latest_price = latest_market_data.loc[latest_market_data['timestamp'].idxmax()]['close']
-                avg_entry_price = data["cost"] / data["quantity"] if data["quantity"] > 0 else 0
-                current_value = data["quantity"] * latest_price
-                unrealized_pnl = current_value - data["cost"]
+            latest_market = market_df[market_df['asset'] == asset]
+            if not latest_market.empty:
+                latest_price = latest_market.loc[latest_market['timestamp'].idxmax()]['close']
+                avg_entry = data["cost"] / data["quantity"]
+                unrealized_pnl = (latest_price * data["quantity"]) - data["cost"]
                 open_positions.append({
-                    "Asset": asset, "Quantity": data["quantity"], "Avg. Entry Price": avg_entry_price,
+                    "Asset": asset, "Quantity": data["quantity"], "Avg. Entry Price": avg_entry,
                     "Current Price": latest_price, "Unrealized P&L ($)": unrealized_pnl,
                 })
     return pd.DataFrame(open_positions)
@@ -179,7 +173,7 @@ def extract_drive_id(url_or_id: str) -> str:
     if m: return m.group(1)
     return s
 
-def download_drive_csv_bytes(url_or_id: str) -> bytes | None:
+def download_drive_file_bytes(url_or_id: str) -> bytes | None:
     fid = extract_drive_id(url_or_id)
     if not fid: return None
     try:
@@ -199,39 +193,29 @@ def download_drive_csv_bytes(url_or_id: str) -> bytes | None:
         st.error(f"Network error downloading file ID {fid}: {e}")
         return None
 
-def read_csv_best_effort(raw: bytes, label: str) -> pd.DataFrame | None:
-    if not raw:
-        st.warning(f"No data bytes received for {label}.")
-        return None
-    if b"<html" in (raw[:512] or b"").lower():
-        st.error(f"Google Drive returned HTML for {label} (check sharing).")
-        return None
-    for kwargs in [{"encoding": "utf-8"}, {"encoding": "utf-8", "engine": "python", "sep": None}, {"encoding": "latin1"}]:
-        try:
-            return pd.read_csv(io.BytesIO(raw), **kwargs)
-        except Exception:
-            continue
-    st.error(f"Failed to parse {label} as CSV.")
-    return None
-
 # =========================
 # Data loading (cached)
 # =========================
 @st.cache_data(ttl=600)
 def load_data(trades_link, market_link):
-    raw_trades = download_drive_csv_bytes(trades_link)
+    raw_trades = download_drive_file_bytes(trades_link)
     trades = None
     if raw_trades:
-        if b"<html" in (raw_trades[:512] or b"").lower():
-            st.error("Google Drive returned an HTML page for the Trades file. Please check sharing permissions.")
-        else:
-            try:
-                trades = pd.read_parquet(io.BytesIO(raw_trades))
-            except Exception as e:
-                st.error(f"Failed to parse Trades data as Parquet: {e}")
+        try:
+            trades = pd.read_parquet(io.BytesIO(raw_trades))
+        except Exception as e:
+            st.error(f"Failed to parse Trades data as Parquet: {e}")
     
-    raw_market = download_drive_csv_bytes(market_link)
-    market = read_csv_best_effort(raw_market, "Market CSV") if raw_market is not None else None
+    raw_market = download_drive_file_bytes(market_link)
+    market = None
+    if raw_market:
+        try:
+            market = pd.read_csv(io.BytesIO(raw_market))
+        except Exception: # Try a few more times with different settings
+             for kwargs in [{"engine": "python", "sep": None}, {"encoding": "latin1"}]:
+                 try: market = pd.read_csv(io.BytesIO(raw_market), **kwargs); break
+                 except: continue
+        if market is None: st.error("Failed to parse Market data as CSV.")
 
     # --- Process Trades Data ---
     if trades is not None and not trades.empty:
@@ -239,11 +223,8 @@ def load_data(trades_link, market_link):
         trades = trades.rename(columns={"product_id": "asset", "side": "action", "size": "quantity"})
         if 'timestamp' in trades.columns:
             trades['timestamp'] = to_local_naive(trades['timestamp'])
-        if "action" in trades.columns:
-            trades["action"] = trades["action"].str.lower()
         for col in ["quantity", "price", "usd_value"]:
-            if col in trades.columns:
-                trades[col] = pd.to_numeric(trades[col], errors="coerce")
+            if col in trades.columns: trades[col] = pd.to_numeric(trades[col], errors="coerce")
     else:
         trades = pd.DataFrame()
 
@@ -254,9 +235,9 @@ def load_data(trades_link, market_link):
         if 'timestamp' in market.columns:
             market['timestamp'] = to_local_naive(market['timestamp'])
         market["asset"] = market["asset"].apply(unify_symbol)
-        market = normalize_prob_columns(market)
+        market = normalize_prob_columns(market) # Normalize p_up/p_down columns
         for col in ["open", "high", "low", "close"]:
-            market[col] = pd.to_numeric(market[col], errors="coerce")
+            if col in market.columns: market[col] = pd.to_numeric(market[col], errors="coerce")
     else:
         market = pd.DataFrame()
 
@@ -271,22 +252,18 @@ st.caption("View position status, P&L and chart controls in the sidebar.")
 
 trades_df, pnl_summary, summary_stats, market_df = load_data(TRADES_LINK, MARKET_LINK)
 
-# --- Sidebar ---
 with st.sidebar:
     st.markdown("<h1 style='text-align: center;'>Trade Analytics</h1>", unsafe_allow_html=True)
     if not trades_df.empty and 'timestamp' in trades_df.columns:
-        min_date = trades_df['timestamp'].min()
-        max_date = trades_df['timestamp'].max()
+        min_date, max_date = trades_df['timestamp'].min(), trades_df['timestamp'].max()
         if pd.notna(min_date) and pd.notna(max_date):
-            date_range_str = f"{min_date.strftime('%m/%d/%y')} - {max_date.strftime('%m/%d/%y')}"
-            st.markdown(f"<p style='text-align: center;'><strong>{date_range_str}</strong></p>", unsafe_allow_html=True)
+            st.markdown(f"<p style='text-align: center;'><strong>{min_date.strftime('%m/%d/%y')} - {max_date.strftime('%m/%d/%y')}</strong></p>", unsafe_allow_html=True)
         else:
-            st.markdown("<p style='text-align: center; color: red;'><strong>Invalid Date Range in File</strong></p>", unsafe_allow_html=True)
+            st.markdown("<p style='text-align: center; color: red;'><strong>Invalid Date Range</strong></p>", unsafe_allow_html=True)
 
     local_tz_obj = timezone(LOCAL_TZ)
     now_local = datetime.now(local_tz_obj)
-    last_updated_str = now_local.strftime('%Y-%m-%d %H:%M')
-    st.markdown(f"<p style='text-align: center; font-size: 0.9em; color: grey;'>Last updated: {last_updated_str}</p>", unsafe_allow_html=True)
+    st.markdown(f"<p style='text-align: center; font-size: 0.9em; color: grey;'>Last updated: {now_local.strftime('%Y-%m-%d %H:%M')}</p>", unsafe_allow_html=True)
     st.markdown("---")
 
     st.markdown("## 💵 Realized P&L")
@@ -297,24 +274,22 @@ with st.sidebar:
         for asset, pnl in sorted(pnl_summary.items(), key=lambda kv: kv[1], reverse=True):
             color = "#10b981" if pnl >= 0 else "#ef4444"
             st.markdown(f"<div style='display:flex;justify-content:space-between'><span>{asset}</span><span style='color:{color};font-weight:600'>${pnl:,.2f}</span></div>", unsafe_allow_html=True)
-    else:
-        st.info("No realized P&L yet (need closed SELLs).")
+    else: st.info("No realized P&L yet.")
     st.markdown("---")
 
     st.markdown("## 📊 Positions Status")
-    if not market_df.empty and not trades_df.empty:
+    if not market_df.empty:
         open_positions_df = calculate_open_positions(trades_df, market_df)
         all_assets = sorted(list(set(market_df["asset"].dropna().unique()) | set(trades_df["asset"].dropna().unique())))
-        open_positions_lookup = open_positions_df.set_index("Asset") if not open_positions_df.empty else pd.DataFrame()
+        lookup = open_positions_df.set_index("Asset") if not open_positions_df.empty else pd.DataFrame()
         for asset in all_assets:
-            if not open_positions_lookup.empty and asset in open_positions_lookup.index:
-                pos = open_positions_lookup.loc[asset]
-                pnl = pos["Unrealized P&L ($)"]
-                color = "lightgreen" if pnl > 0 else "salmon"
-                st.sidebar.markdown(f'<p style="color:{color}; font-weight:bold; margin-bottom:0px;">{asset}</p>', unsafe_allow_html=True)
-                st.sidebar.caption(f"Qty: {pos['Quantity']:.4f} | Avg Entry: ${pos['Avg. Entry Price']:.6f} | Current: ${pos['Current Price']:.6f}")
+            if not lookup.empty and asset in lookup.index:
+                pos = lookup.loc[asset]
+                pnl, color = pos["Unrealized P&L ($)"], "lightgreen" if pos["Unrealized P&L ($)"] > 0 else "salmon"
+                st.markdown(f'<p style="color:{color}; font-weight:bold; margin-bottom:0px;">{asset}</p>', unsafe_allow_html=True)
+                st.caption(f"Qty: {pos['Quantity']:.4f} | Avg Entry: ${pos['Avg. Entry Price']:.6f} | Current: ${pos['Current Price']:.6f}")
             else:
-                st.sidebar.markdown(f'<p style="color:royalblue; margin-bottom:0px;">{asset}</p>', unsafe_allow_html=True)
+                st.markdown(f'<p style="color:royalblue; margin-bottom:0px;">{asset}</p>', unsafe_allow_html=True)
     st.markdown("---")
 
     st.markdown("## ⚙️ Chart Controls")
@@ -325,7 +300,6 @@ with st.sidebar:
         selected_asset = st.sidebar.selectbox("Select Asset", assets, index=default_index)
         range_choice = st.sidebar.selectbox("Select Date Range", ["30 days", "7 days", "1 day", "All"], index=0)
 
-# --- Tabs ---
 tab1, tab2 = st.tabs(["📈 Candlestick Analysis", "💰 P&L Analysis"])
 
 with tab1:
@@ -343,28 +317,23 @@ with tab1:
             else: start_date = df["timestamp"].min()
 
             vis = df[(df["timestamp"] >= start_date) & (df["timestamp"] <= end_date)].copy()
-
             if vis.empty:
                 st.warning("No market data in the selected date range for this asset.")
             else:
-                y_min, y_max = vis["low"].min(), vis["high"].max()
-                rescale = (pd.to_numeric(y_max, errors="coerce") < 0.01)
+                rescale = (vis["high"].max() < 0.01) if not vis.empty else False
+                ylabel = "Price (µUSD)" if rescale else "Price (USD)"
                 if rescale:
-                    for c in ["open", "high", "low", "close"]: vis[c] = pd.to_numeric(vis[c], errors="coerce") * 1e6
-                    ylabel = "Price (µUSD)"
-                else:
-                    ylabel = "Price (USD)"
-
+                    for col in ["open", "high", "low", "close"]: vis[col] *= 1e6
+                
                 def fmt(v, d=6): return f"{float(v):.{d}f}" if pd.notna(v) else "—"
 
-                hovertext = [f"📅 {r['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}<br>O: {fmt(r['open'])}<br>H: {fmt(r['high'])}<br>L: {fmt(r['low'])}<br>C: {fmt(r['close'])}<br><b>P-Up: {fmt(r.get('p_up'))}</b><br><b>P-Down: {fmt(r.get('p_down'))}</b>" for _, r in vis.iterrows()]
-
+                hovertext = [f"📅 {r['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}<br>O: {fmt(r['open'])}<br>H: {fmt(r['high'])}<br>L: {fmt(r['low'])}<br>C: {fmt(r['close'])}<br><b>P-Up: {fmt(r.get('p_up'), 4)}</b><br><b>P-Down: {fmt(r.get('p_down'), 4)}</b>" for _, r in vis.iterrows()]
                 fig = go.Figure(data=go.Candlestick(x=vis["timestamp"], open=vis["open"], high=vis["high"], low=vis["low"], close=vis["close"], name=selected_asset, text=hovertext, hoverinfo="text"))
 
                 if not trades_df.empty:
                     asset_trades = trades_df[(trades_df["asset"] == selected_asset) & (trades_df["timestamp"] >= start_date) & (trades_df["timestamp"] <= end_date)].copy()
                     if not asset_trades.empty:
-                        if rescale: asset_trades["price"] *= 1e6
+                        if rescale: asset_trades.loc[:, "price"] *= 1e6
                         buys = asset_trades[asset_trades["action"] == "buy"]
                         sells = asset_trades[asset_trades["action"] == "sell"]
                         if not buys.empty: fig.add_trace(go.Scatter(x=buys["timestamp"], y=buys["price"], mode="markers", name="BUY", marker=dict(symbol="triangle-up", size=10, color="green")))
@@ -374,7 +343,7 @@ with tab1:
                 st.plotly_chart(fig, use_container_width=True)
 
 with tab2:
-    if trades_df is None or trades_df.empty:
+    if trades_df.empty:
         st.warning("No trade data loaded to perform P&L analysis.")
     else:
         st.markdown("### Realized P&L (from closed trades)")
