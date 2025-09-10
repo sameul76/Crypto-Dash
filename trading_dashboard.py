@@ -32,6 +32,27 @@ def lower_strip_cols(df: pd.DataFrame) -> pd.DataFrame:
     out.columns = [c.lower().strip() for c in out.columns]
     return out
 
+# --- NEW: Robust Timezone Conversion Function ---
+def to_local_naive(series: pd.Series) -> pd.Series:
+    """
+    Converts a pandas Series of timestamps to naive local time objects.
+    Handles numeric (Unix), naive datetime, and aware datetime formats.
+    """
+    # First, convert any numeric types (like Unix timestamps) to datetime objects
+    if pd.api.types.is_numeric_dtype(series):
+        series = pd.to_datetime(series, unit='s', errors='coerce')
+    else:
+        series = pd.to_datetime(series, errors='coerce')
+
+    # Now, handle timezone conversion
+    if series.dt.tz is None:
+        # If naive, assume UTC, convert to local, then remove tz info
+        return series.dt.tz_localize('UTC').dt.tz_convert(LOCAL_TZ).dt.tz_localize(None)
+    else:
+        # If already has a timezone, just convert to local and remove tz info
+        return series.dt.tz_convert(LOCAL_TZ).dt.tz_localize(None)
+
+
 def unify_symbol(val: str) -> str:
     """Unify GIGA-like ids to GIGA-USD; leave everything else untouched."""
     if not isinstance(val, str):
@@ -64,7 +85,6 @@ def calculate_pnl_and_metrics(trades_df):
         return {}, pd.DataFrame(), {}
     pnl_per_asset, positions = {}, {}
     df = trades_df.copy()
-    # Ensure timestamp is a datetime object before proceeding
     df["timestamp"] = pd.to_datetime(df["timestamp"])
     df = df.sort_values("timestamp").reset_index(drop=True)
     df["pnl"], df["cumulative_pnl"] = 0.0, 0.0
@@ -151,22 +171,17 @@ def calculate_open_positions(trades_df, market_df):
 # Helpers — Drive download
 # =========================
 def extract_drive_id(url_or_id: str) -> str:
-    """Pull Google Drive file id from full URL or return the id if it's already one."""
-    if not url_or_id:
-        return ""
+    if not url_or_id: return ""
     s = url_or_id.strip()
     m = re.search(r"/d/([A-Za-z0-9_-]{20,})", s)
-    if m:
-        return m.group(1)
+    if m: return m.group(1)
     m = re.search(r"[?&]id=([A-Za-z0-9_-]{20,})", s)
-    if m:
-        return m.group(1)
+    if m: return m.group(1)
     return s
 
 def download_drive_csv_bytes(url_or_id: str) -> bytes | None:
     fid = extract_drive_id(url_or_id)
-    if not fid:
-        return None
+    if not fid: return None
     try:
         base = "https://drive.google.com/uc?export=download"
         with requests.Session() as s:
@@ -191,12 +206,7 @@ def read_csv_best_effort(raw: bytes, label: str) -> pd.DataFrame | None:
     if b"<html" in (raw[:512] or b"").lower():
         st.error(f"Google Drive returned HTML for {label} (check sharing).")
         return None
-    for kwargs in [
-        {"encoding": "utf-8"},
-        {"encoding": "utf-8", "engine": "python", "sep": None},
-        {"encoding": "latin1", "engine": "python"},
-        {"encoding": "latin1", "engine": "python", "on_bad_lines": "skip"},
-    ]:
+    for kwargs in [{"encoding": "utf-8"}, {"encoding": "utf-8", "engine": "python", "sep": None}, {"encoding": "latin1"}]:
         try:
             return pd.read_csv(io.BytesIO(raw), **kwargs)
         except Exception:
@@ -227,12 +237,8 @@ def load_data(trades_link, market_link):
     if trades is not None and not trades.empty:
         trades = lower_strip_cols(trades)
         trades = trades.rename(columns={"product_id": "asset", "side": "action", "size": "quantity"})
-        
-        # --- CORRECTED Timestamp Conversion ---
-        if 'timestamp' in trades.columns and pd.api.types.is_numeric_dtype(trades['timestamp']):
-            trades['timestamp'] = pd.to_datetime(trades['timestamp'], unit='s', errors='coerce')
-            trades['timestamp'] = trades['timestamp'].dt.tz_localize('UTC').dt.tz_convert(LOCAL_TZ)
-        
+        if 'timestamp' in trades.columns:
+            trades['timestamp'] = to_local_naive(trades['timestamp'])
         if "action" in trades.columns:
             trades["action"] = trades["action"].str.lower()
         for col in ["quantity", "price", "usd_value"]:
@@ -245,12 +251,8 @@ def load_data(trades_link, market_link):
     if market is not None and not market.empty:
         market = lower_strip_cols(market)
         market = market.rename(columns={"product_id": "asset"})
-        
-        # --- Timestamp Conversion for Market Data ---
         if 'timestamp' in market.columns:
-            market['timestamp'] = pd.to_datetime(market['timestamp'], errors='coerce')
-            market['timestamp'] = market['timestamp'].dt.tz_localize('UTC').dt.tz_convert(LOCAL_TZ)
-
+            market['timestamp'] = to_local_naive(market['timestamp'])
         market["asset"] = market["asset"].apply(unify_symbol)
         market = normalize_prob_columns(market)
         for col in ["open", "high", "low", "close"]:
@@ -258,7 +260,7 @@ def load_data(trades_link, market_link):
     else:
         market = pd.DataFrame()
 
-    pnl_summary, trades_with_pnl, stats = calculate_pnl_and_metrics(trades.copy()) if not trades.empty else ({}, pd.DataFrame(), {})
+    pnl_summary, trades_with_pnl, stats = calculate_pnl_and_metrics(trades) if not trades.empty else ({}, pd.DataFrame(), {})
     return trades_with_pnl, pnl_summary, stats, market
 
 # =========================
@@ -271,7 +273,6 @@ trades_df, pnl_summary, summary_stats, market_df = load_data(TRADES_LINK, MARKET
 
 # --- Sidebar ---
 with st.sidebar:
-    # --- Restyled and Centered Title ---
     st.markdown("<h1 style='text-align: center;'>Trade Analytics</h1>", unsafe_allow_html=True)
     if not trades_df.empty and 'timestamp' in trades_df.columns:
         min_date = trades_df['timestamp'].min()
@@ -288,7 +289,6 @@ with st.sidebar:
     st.markdown(f"<p style='text-align: center; font-size: 0.9em; color: grey;'>Last updated: {last_updated_str}</p>", unsafe_allow_html=True)
     st.markdown("---")
 
-    # --- Realized P&L ---
     st.markdown("## 💵 Realized P&L")
     if pnl_summary:
         total_pnl = sum(p for p in pnl_summary.values() if pd.notna(p))
@@ -296,18 +296,11 @@ with st.sidebar:
         st.markdown("**By Asset**")
         for asset, pnl in sorted(pnl_summary.items(), key=lambda kv: kv[1], reverse=True):
             color = "#10b981" if pnl >= 0 else "#ef4444"
-            st.markdown(
-                f"<div style='display:flex;justify-content:space-between'>"
-                f"<span>{asset}</span>"
-                f"<span style='color:{color};font-weight:600'>${pnl:,.2f}</span>"
-                f"</div>",
-                unsafe_allow_html=True
-            )
+            st.markdown(f"<div style='display:flex;justify-content:space-between'><span>{asset}</span><span style='color:{color};font-weight:600'>${pnl:,.2f}</span></div>", unsafe_allow_html=True)
     else:
         st.info("No realized P&L yet (need closed SELLs).")
     st.markdown("---")
 
-    # --- Positions Status ---
     st.markdown("## 📊 Positions Status")
     if not market_df.empty and not trades_df.empty:
         open_positions_df = calculate_open_positions(trades_df, market_df)
@@ -319,16 +312,11 @@ with st.sidebar:
                 pnl = pos["Unrealized P&L ($)"]
                 color = "lightgreen" if pnl > 0 else "salmon"
                 st.sidebar.markdown(f'<p style="color:{color}; font-weight:bold; margin-bottom:0px;">{asset}</p>', unsafe_allow_html=True)
-                st.sidebar.caption(
-                    f"Qty: {pos['Quantity']:.4f} | "
-                    f"Avg Entry: ${pos['Avg. Entry Price']:.6f} | "
-                    f"Current: ${pos['Current Price']:.6f}"
-                )
+                st.sidebar.caption(f"Qty: {pos['Quantity']:.4f} | Avg Entry: ${pos['Avg. Entry Price']:.6f} | Current: ${pos['Current Price']:.6f}")
             else:
                 st.sidebar.markdown(f'<p style="color:royalblue; margin-bottom:0px;">{asset}</p>', unsafe_allow_html=True)
     st.markdown("---")
 
-    # --- Chart Controls ---
     st.markdown("## ⚙️ Chart Controls")
     selected_asset = None
     if not market_df.empty:
@@ -344,23 +332,15 @@ with tab1:
     if selected_asset is None or market_df.empty:
         st.warning("Market data not loaded. Cannot display chart.")
     else:
-        # Make a local copy of market_df to avoid timezone issues with cached object
-        df = market_df.copy()
-        df['timestamp'] = df['timestamp'].dt.tz_localize(None) # Make naive for plotting
-        df = df[df["asset"] == selected_asset].sort_values("timestamp")
-
+        df = market_df[market_df["asset"] == selected_asset].sort_values("timestamp")
         if df.empty:
             st.warning("No market rows for selected asset.")
         else:
             end_date = df["timestamp"].max()
-            if range_choice == "1 day":
-                start_date = end_date - timedelta(days=1)
-            elif range_choice == "7 days":
-                start_date = end_date - timedelta(days=7)
-            elif range_choice == "30 days":
-                start_date = end_date - timedelta(days=30)
-            else:
-                start_date = df["timestamp"].min()
+            if range_choice == "1 day": start_date = end_date - timedelta(days=1)
+            elif range_choice == "7 days": start_date = end_date - timedelta(days=7)
+            elif range_choice == "30 days": start_date = end_date - timedelta(days=30)
+            else: start_date = df["timestamp"].min()
 
             vis = df[(df["timestamp"] >= start_date) & (df["timestamp"] <= end_date)].copy()
 
@@ -370,52 +350,27 @@ with tab1:
                 y_min, y_max = vis["low"].min(), vis["high"].max()
                 rescale = (pd.to_numeric(y_max, errors="coerce") < 0.01)
                 if rescale:
-                    for c in ["open", "high", "low", "close"]:
-                        vis[c] = pd.to_numeric(vis[c], errors="coerce") * 1e6
+                    for c in ["open", "high", "low", "close"]: vis[c] = pd.to_numeric(vis[c], errors="coerce") * 1e6
                     ylabel = "Price (µUSD)"
                 else:
                     ylabel = "Price (USD)"
 
-                def fmt(v, decimals=6):
-                    try: return f"{float(v):.{decimals}f}"
-                    except (ValueError, TypeError): return "—"
+                def fmt(v, d=6): return f"{float(v):.{d}f}" if pd.notna(v) else "—"
 
-                hovertext = [
-                    f"📅 {row['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}<br>Open: {fmt(row['open'])}<br>High: {fmt(row['high'])}<br>Low: {fmt(row['low'])}<br>Close: {fmt(row['close'])}<br><b>P-Up: {fmt(row.get('p_up'))}</b><br><b>P-Down: {fmt(row.get('p_down'))}</b>"
-                    for _, row in vis.iterrows()
-                ]
+                hovertext = [f"📅 {r['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}<br>O: {fmt(r['open'])}<br>H: {fmt(r['high'])}<br>L: {fmt(r['low'])}<br>C: {fmt(r['close'])}<br><b>P-Up: {fmt(r.get('p_up'))}</b><br><b>P-Down: {fmt(r.get('p_down'))}</b>" for _, r in vis.iterrows()]
 
-                fig = go.Figure()
-                fig.add_trace(go.Candlestick(
-                    x=vis["timestamp"], open=vis["open"], high=vis["high"], low=vis["low"], close=vis["close"],
-                    name=selected_asset, text=hovertext, hoverinfo="text"
-                ))
+                fig = go.Figure(data=go.Candlestick(x=vis["timestamp"], open=vis["open"], high=vis["high"], low=vis["low"], close=vis["close"], name=selected_asset, text=hovertext, hoverinfo="text"))
 
                 if not trades_df.empty:
-                    trades_to_plot = trades_df.copy()
-                    trades_to_plot['timestamp'] = trades_to_plot['timestamp'].dt.tz_localize(None) # Make naive for plotting
-                    asset_trades = trades_to_plot[
-                        (trades_to_plot["asset"] == selected_asset) &
-                        (trades_to_plot["timestamp"] >= start_date) &
-                        (trades_to_plot["timestamp"] <= end_date)
-                    ].copy()
-
+                    asset_trades = trades_df[(trades_df["asset"] == selected_asset) & (trades_df["timestamp"] >= start_date) & (trades_df["timestamp"] <= end_date)].copy()
                     if not asset_trades.empty:
-                        if rescale:
-                            asset_trades["price"] *= 1e6
+                        if rescale: asset_trades["price"] *= 1e6
                         buys = asset_trades[asset_trades["action"] == "buy"]
                         sells = asset_trades[asset_trades["action"] == "sell"]
-                        if not buys.empty:
-                            fig.add_trace(go.Scatter(x=buys["timestamp"], y=buys["price"], mode="markers", name="BUY", marker=dict(symbol="triangle-up", size=10, color="green")))
-                        if not sells.empty:
-                            fig.add_trace(go.Scatter(x=sells["timestamp"], y=sells["price"], mode="markers", name="SELL", marker=dict(symbol="triangle-down", size=10, color="red")))
+                        if not buys.empty: fig.add_trace(go.Scatter(x=buys["timestamp"], y=buys["price"], mode="markers", name="BUY", marker=dict(symbol="triangle-up", size=10, color="green")))
+                        if not sells.empty: fig.add_trace(go.Scatter(x=sells["timestamp"], y=sells["price"], mode="markers", name="SELL", marker=dict(symbol="triangle-down", size=10, color="red")))
 
-                fig.update_layout(
-                    template="plotly_white", xaxis_rangeslider_visible=False, hovermode="x unified",
-                    yaxis_title=ylabel, title=f"{selected_asset} — Price & Trades",
-                    legend=dict(orientation="h", y=1.03, x=0.5, xanchor="center"), height=600,
-                    margin=dict(l=40, r=20, t=60, b=40),
-                )
+                fig.update_layout(template="plotly_white", xaxis_rangeslider_visible=False, hovermode="x unified", yaxis_title=ylabel, title=f"{selected_asset} — Price & Trades", legend=dict(orientation="h", y=1.03, x=0.5, xanchor="center"), height=600, margin=dict(l=40, r=20, t=60, b=40))
                 st.plotly_chart(fig, use_container_width=True)
 
 with tab2:
@@ -431,16 +386,13 @@ with tab2:
             m3.metric("Total Closed Trades", f"{summary_stats['total_trades']:,}")
         
         show_all_assets = st.checkbox("Show P&L for all assets (Portfolio)", value=True)
-        pnl_trades = trades_df.copy()
-        pnl_trades['timestamp'] = pnl_trades['timestamp'].dt.tz_localize(None) # Make naive for plotting
-        assets_for_plot = pnl_trades if show_all_assets else pnl_trades[pnl_trades['asset'] == (selected_asset or DEFAULT_ASSET)]
+        assets_for_plot = trades_df if show_all_assets else trades_df[trades_df['asset'] == (selected_asset or DEFAULT_ASSET)]
         pnl_col = "cumulative_pnl" if show_all_assets else "asset_cumulative_pnl"
         title = "Total Portfolio Cumulative P&L" if show_all_assets else f"Cumulative P&L for {selected_asset or DEFAULT_ASSET}"
         
         if assets_for_plot.empty or assets_for_plot[pnl_col].sum() == 0:
             st.warning("No P&L data to display.")
         else:
-            fig_pnl = go.Figure()
-            fig_pnl.add_trace(go.Scatter(x=assets_for_plot["timestamp"], y=assets_for_plot[pnl_col], mode="lines", name="Cumulative P&L"))
+            fig_pnl = go.Figure(data=go.Scatter(x=assets_for_plot["timestamp"], y=assets_for_plot[pnl_col], mode="lines", name="Cumulative P&L"))
             fig_pnl.update_layout(title=title, template="plotly_white", yaxis_title="P&L (USD)")
             st.plotly_chart(fig_pnl, use_container_width=True)
