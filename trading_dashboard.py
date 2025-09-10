@@ -285,8 +285,23 @@ st.caption("View position status, P&L and chart controls in the sidebar.")
 
 trades_df, pnl_summary, summary_stats, market_df = load_data(TRADES_LINK, MARKET_LINK)
 
-# --- Sidebar: Realized P&L ---
+# --- Sidebar ---
 with st.sidebar:
+    # --- NEW: Moved Title and Date Info to the Top ---
+    st.title("Trade Analytics")
+    if not trades_df.empty and 'timestamp' in trades_df.columns:
+        min_date = trades_df['timestamp'].min()
+        max_date = trades_df['timestamp'].max()
+        if pd.notna(min_date) and pd.notna(max_date):
+            st.markdown(f"**Data From:** `{min_date.strftime('%Y-%m-%d')}`")
+            st.markdown(f"**Data To:** `{max_date.strftime('%Y-%m-%d')}`")
+        else:
+            st.warning("Could not determine the date range.")
+    st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    st.markdown("---")
+
+
+    # --- Realized P&L ---
     st.markdown("## 💵 Realized P&L")
     if pnl_summary:
         total_pnl = sum(v for v in pnl_summary.values() if pd.notna(v))
@@ -303,55 +318,37 @@ with st.sidebar:
             )
     else:
         st.info("No realized P&L yet (need closed SELLs).")
+    st.markdown("---")
 
-st.sidebar.markdown("---")
-# --- Sidebar: Positions ---
-st.sidebar.markdown("## 📊 Positions Status")
-if not market_df.empty:
-    open_positions_df = calculate_open_positions(trades_df, market_df)
-    all_assets = sorted(market_df["asset"].dropna().unique())
-    open_positions_lookup = open_positions_df.set_index("Asset") if not open_positions_df.empty else pd.DataFrame()
-    for asset in all_assets:
-        if not open_positions_lookup.empty and asset in open_positions_lookup.index:
-            pos = open_positions_lookup.loc[asset]
-            pnl = pos["Unrealized P&L ($)"]
-            color = "lightgreen" if pnl > 0 else "salmon"
-            st.sidebar.markdown(f'<p style="color:{color}; font-weight:bold; margin-bottom:0px;">{asset}</p>', unsafe_allow_html=True)
-            st.sidebar.caption(
-                f"Qty: {pos['Quantity']:.4f} | "
-                f"Avg Entry: ${pos['Avg. Entry Price']:.6f} | "
-                f"Current: ${pos['Current Price']:.6f}"
-            )
-        else:
-            st.sidebar.markdown(f'<p style="color:royalblue; margin-bottom:0px;">{asset}</p>', unsafe_allow_html=True)
+    # --- Positions Status ---
+    st.markdown("## 📊 Positions Status")
+    if not market_df.empty:
+        open_positions_df = calculate_open_positions(trades_df, market_df)
+        all_assets = sorted(market_df["asset"].dropna().unique())
+        open_positions_lookup = open_positions_df.set_index("Asset") if not open_positions_df.empty else pd.DataFrame()
+        for asset in all_assets:
+            if not open_positions_lookup.empty and asset in open_positions_lookup.index:
+                pos = open_positions_lookup.loc[asset]
+                pnl = pos["Unrealized P&L ($)"]
+                color = "lightgreen" if pnl > 0 else "salmon"
+                st.sidebar.markdown(f'<p style="color:{color}; font-weight:bold; margin-bottom:0px;">{asset}</p>', unsafe_allow_html=True)
+                st.sidebar.caption(
+                    f"Qty: {pos['Quantity']:.4f} | "
+                    f"Avg Entry: ${pos['Avg. Entry Price']:.6f} | "
+                    f"Current: ${pos['Current Price']:.6f}"
+                )
+            else:
+                st.sidebar.markdown(f'<p style="color:royalblue; margin-bottom:0px;">{asset}</p>', unsafe_allow_html=True)
+    st.markdown("---")
 
-st.sidebar.markdown("---")
-st.sidebar.markdown("## ⚙️ Chart Controls")
-selected_asset = None
-if not market_df.empty:
-    assets = sorted(market_df["asset"].dropna().unique())
-    default_index = assets.index(DEFAULT_ASSET) if DEFAULT_ASSET in assets else 0
-    selected_asset = st.sidebar.selectbox("Select Asset", assets, index=default_index)
-    range_choice = st.sidebar.selectbox("Select Date Range", ["30 days", "7 days", "1 day", "All"], index=0)
-
-# --- NEW: Sidebar Date Range Display ---
-if not trades_df.empty and 'timestamp' in trades_df.columns:
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("###  Trade File Date Range")
-    min_date = trades_df['timestamp'].min()
-    max_date = trades_df['timestamp'].max()
-    if pd.notna(min_date) and pd.notna(max_date):
-        st.sidebar.success(
-            f"**Earliest Trade:**\n\n{min_date.strftime('%Y-%m-%d')}\n\n"
-            f"**Latest Trade:**\n\n{max_date.strftime('%Y-%m-%d')}"
-        )
-    else:
-        st.sidebar.warning("Could not determine the date range.")
-
-# --- NEW: Sidebar Last Updated Time ---
-st.sidebar.markdown("---")
-st.sidebar.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-
+    # --- Chart Controls ---
+    st.markdown("## ⚙️ Chart Controls")
+    selected_asset = None
+    if not market_df.empty:
+        assets = sorted(market_df["asset"].dropna().unique())
+        default_index = assets.index(DEFAULT_ASSET) if DEFAULT_ASSET in assets else 0
+        selected_asset = st.sidebar.selectbox("Select Asset", assets, index=default_index)
+        range_choice = st.sidebar.selectbox("Select Date Range", ["30 days", "7 days", "1 day", "All"], index=0)
 
 # --- Tabs ---
 tab1, tab2 = st.tabs(["📈 Candlestick Analysis", "💰 P&L Analysis"])
