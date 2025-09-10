@@ -6,6 +6,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
+from pytz import timezone
 # Note: Reading Parquet files with pandas requires the 'pyarrow' library.
 # You may need to install it: pip install pyarrow
 import pyarrow
@@ -32,20 +33,24 @@ def lower_strip_cols(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 def to_local_naive(ts):
-    # Try converting assuming it's already a datetime object
+    # This function converts various timestamp formats to a timezone-aware object
+    # in your local timezone, then makes it "naive" for easier plotting.
+    # It assumes numeric (Unix) timestamps are in UTC.
     s = pd.to_datetime(ts, errors="coerce")
     try:
-        if s.dt.tz is not None:
+        if s.dt.tz is None:
+            # If naive, assume UTC, convert to local, then remove tz info
+             s = s.dt.tz_localize('UTC').dt.tz_convert(LOCAL_TZ).dt.tz_localize(None)
+        else:
+            # If already has a timezone, just convert to local and remove tz info
             s = s.dt.tz_convert(LOCAL_TZ).dt.tz_localize(None)
     except Exception:
-        # If that fails, it might be a Unix timestamp (numeric)
+        # Fallback for numeric unix timestamps
         try:
-             s = pd.to_datetime(ts, unit='s', errors='coerce').dt.tz_localize('UTC').dt.tz_convert(LOCAL_TZ).dt.tz_localize(None)
+            s = pd.to_datetime(ts, unit='s', errors='coerce').dt.tz_localize('UTC').dt.tz_convert(LOCAL_TZ).dt.tz_localize(None)
         except Exception:
-            try:
-                s = s.dt.tz_localize("UTC").dt.tz_convert(LOCAL_TZ).dt.tz_localize(None)
-            except Exception:
-                s = s.dt.tz_localize(None)
+            # Final fallback, just make it a datetime object
+            s = pd.to_datetime(ts, errors='coerce')
     return s
 
 
@@ -249,10 +254,9 @@ def load_data(trades_link, market_link):
         if "product_id" in trades.columns:
             trades = trades.rename(columns={"product_id": "asset"})
         trades = trades.rename(columns={"side": "action", "size": "quantity"})
-        # IMPORTANT: Convert Unix timestamp (float) to datetime
-        if 'timestamp' in trades.columns and pd.api.types.is_numeric_dtype(trades['timestamp']):
-             trades['timestamp'] = pd.to_datetime(trades['timestamp'], unit='s', errors='coerce')
-        trades["timestamp"] = to_local_naive(trades["timestamp"])
+        # IMPORTANT: Convert Unix timestamp (float) to datetime and then to local time
+        if 'timestamp' in trades.columns:
+             trades['timestamp'] = to_local_naive(trades['timestamp'])
         if "action" in trades.columns:
             trades["action"] = trades["action"].str.lower()
         for col in ["quantity", "price", "usd_value"]:
@@ -267,7 +271,8 @@ def load_data(trades_link, market_link):
         if "product_id" in market.columns:
             market = market.rename(columns={"product_id": "asset"})
         market["asset"] = market["asset"].apply(unify_symbol)
-        market["timestamp"] = to_local_naive(market["timestamp"])
+        if 'timestamp' in market.columns:
+            market["timestamp"] = to_local_naive(market["timestamp"])
         market = normalize_prob_columns(market)
         for col in ["open", "high", "low", "close"]:
             market[col] = pd.to_numeric(market[col], errors="coerce")
@@ -287,7 +292,7 @@ trades_df, pnl_summary, summary_stats, market_df = load_data(TRADES_LINK, MARKET
 
 # --- Sidebar ---
 with st.sidebar:
-    # --- NEW: Restyled Title and Date Info ---
+    # --- Restyled Title and Date Info ---
     st.title("Trade Analytics")
     if not trades_df.empty and 'timestamp' in trades_df.columns:
         min_date = trades_df['timestamp'].min()
@@ -297,7 +302,11 @@ with st.sidebar:
             st.markdown(f"**{date_range_str}**")
         else:
             st.warning("Could not determine date range.")
-    st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    
+    # --- Explicit timezone conversion for "Last updated" ---
+    local_tz_obj = timezone(LOCAL_TZ)
+    now_local = datetime.now(local_tz_obj)
+    st.caption(f"Last updated: {now_local.strftime('%Y-%m-%d %H:%M:%S %Z')}")
     st.markdown("---")
 
     # --- Realized P&L ---
