@@ -287,19 +287,18 @@ trades_df, pnl_summary, summary_stats, market_df = load_data(TRADES_LINK, MARKET
 
 # --- Sidebar ---
 with st.sidebar:
-    # --- NEW: Moved Title and Date Info to the Top ---
+    # --- NEW: Restyled Title and Date Info ---
     st.title("Trade Analytics")
     if not trades_df.empty and 'timestamp' in trades_df.columns:
         min_date = trades_df['timestamp'].min()
         max_date = trades_df['timestamp'].max()
         if pd.notna(min_date) and pd.notna(max_date):
-            st.markdown(f"**Data From:** `{min_date.strftime('%Y-%m-%d')}`")
-            st.markdown(f"**Data To:** `{max_date.strftime('%Y-%m-%d')}`")
+            date_range_str = f"{min_date.strftime('%m/%d/%y')} - {max_date.strftime('%m/%d/%y')}"
+            st.markdown(f"**{date_range_str}**")
         else:
-            st.warning("Could not determine the date range.")
+            st.warning("Could not determine date range.")
     st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     st.markdown("---")
-
 
     # --- Realized P&L ---
     st.markdown("## 💵 Realized P&L")
