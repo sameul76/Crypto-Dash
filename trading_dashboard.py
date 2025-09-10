@@ -307,3 +307,136 @@ if not market_df.empty:
         if not open_positions_lookup.empty and asset in open_positions_lookup.index:
             pos = open_positions_lookup.loc[asset]
             pnl = pos["Unrealized P&L ($)"]
+            color = "lightgreen" if pnl > 0 else "salmon"
+            st.sidebar.markdown(f'<p style="color:{color}; font-weight:bold; margin-bottom:0px;">{asset}</p>', unsafe_allow_html=True)
+            st.sidebar.caption(
+                f"Qty: {pos['Quantity']:.4f} | "
+                f"Avg Entry: ${pos['Avg. Entry Price']:.6f} | "
+                f"Current: ${pos['Current Price']:.6f}"
+            )
+        else:
+            st.sidebar.markdown(f'<p style="color:royalblue; margin-bottom:0px;">{asset}</p>', unsafe_allow_html=True)
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("## ⚙️ Chart Controls")
+selected_asset = None
+if not market_df.empty:
+    assets = sorted(market_df["asset"].dropna().unique())
+    default_index = assets.index(DEFAULT_ASSET) if DEFAULT_ASSET in assets else 0
+    selected_asset = st.sidebar.selectbox("Select Asset", assets, index=default_index)
+    range_choice = st.sidebar.selectbox("Select Date Range", ["30 days", "7 days", "1 day", "All"], index=0)
+
+# --- Tabs ---
+tab1, tab2 = st.tabs(["📈 Candlestick Analysis", "💰 P&L Analysis"])
+
+with tab1:
+    if selected_asset is None or market_df.empty:
+        st.warning("Market data not loaded. Cannot display chart.")
+    else:
+        df = market_df[market_df["asset"] == selected_asset].copy().sort_values("timestamp")
+        if df.empty:
+            st.warning("No market rows for selected asset.")
+        else:
+            end_date = df["timestamp"].max()
+            if range_choice == "1 day":
+                start_date = end_date - timedelta(days=1)
+            elif range_choice == "7 days":
+                start_date = end_date - timedelta(days=7)
+            elif range_choice == "30 days":
+                start_date = end_date - timedelta(days=30)
+            else:
+                start_date = df["timestamp"].min()
+
+            vis = df[(df["timestamp"] >= start_date) & (df["timestamp"] <= end_date)].copy()
+
+            if vis.empty:
+                st.warning("No market data in the selected date range for this asset.")
+            else:
+                # -------- Auto-rescale to µUSD for micro-priced assets --------
+                y_min, y_max = vis["low"].min(), vis["high"].max()
+                rescale = (pd.to_numeric(y_max, errors="coerce") < 0.01)
+                if rescale:
+                    for c in ["open", "high", "low", "close"]:
+                        vis[c] = pd.to_numeric(vis[c], errors="coerce") * 1e6
+                    ylabel = "Price (µUSD)"
+                else:
+                    ylabel = "Price (USD)"
+
+                def fmt(v, decimals=6):
+                    try:
+                        return f"{float(v):.{decimals}f}"
+                    except (ValueError, TypeError):
+                        return "—"
+
+                hovertext = [
+                    f"📅 {row['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}"
+                    + f"<br>Open: {fmt(row['open'])}"
+                    + f"<br>High: {fmt(row['high'])}"
+                    + f"<br>Low: {fmt(row['low'])}"
+                    + f"<br>Close: {fmt(row['close'])}"
+                    + f"<br><b>P-Up: {fmt(row.get('p_up'))}</b>"
+                    + f"<br><b>P-Down: {fmt(row.get('p_down'))}</b>"
+                    for _, row in vis.iterrows()
+                ]
+
+                fig = go.Figure()
+                fig.add_trace(go.Candlestick(
+                    x=vis["timestamp"], open=vis["open"], high=vis["high"], low=vis["low"], close=vis["close"],
+                    name=selected_asset, text=hovertext, hoverinfo="text"
+                ))
+
+                # ---- Trades overlay (scale markers if needed) ----
+                if not trades_df.empty:
+                    asset_trades = trades_df[
+                        (trades_df["asset"] == selected_asset) &
+                        (trades_df["timestamp"] >= start_date) &
+                        (trades_df["timestamp"] <= end_date)
+                    ].copy()
+                    if not asset_trades.empty:
+                        if rescale:
+                            asset_trades["price"] = pd.to_numeric(asset_trades["price"], errors="coerce") * 1e6
+                        buys = asset_trades[asset_trades["action"] == "buy"]
+                        sells = asset_trades[asset_trades["action"] == "sell"]
+                        if not buys.empty:
+                            fig.add_trace(go.Scatter(
+                                x=buys["timestamp"], y=buys["price"], mode="markers",
+                                name="BUY", marker=dict(symbol="triangle-up", size=10, color="green")
+                            ))
+                        if not sells.empty:
+                            fig.add_trace(go.Scatter(
+                                x=sells["timestamp"], y=sells["price"], mode="markers",
+                                name="SELL", marker=dict(symbol="triangle-down", size=10, color="red")
+                            ))
+
+                fig.update_layout(
+                    template="plotly_white", xaxis_rangeslider_visible=False, hovermode="x unified",
+                    yaxis_title=ylabel, title=f"{selected_asset} — Price & Trades",
+                    legend=dict(orientation="h", y=1.03, x=0.5, xanchor="center"), height=600,
+                    margin=dict(l=40, r=20, t=60, b=40),
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+with tab2:
+    if trades_df is None or trades_df.empty:
+        st.warning("No trade data loaded to perform P&L analysis.")
+    else:
+        st.markdown("### Realized P&L (from closed trades)")
+        if summary_stats and summary_stats.get('total_trades', 0) > 0:
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Win Rate", f"{summary_stats['win_rate']:.2f}%")
+            pf = summary_stats['profit_factor']
+            m2.metric("Profit Factor", "∞" if np.isinf(pf) else f"{pf:.2f}")
+            m3.metric("Total Closed Trades", f"{summary_stats['total_trades']:,}")
+        
+        show_all_assets = st.checkbox("Show P&L for all assets (Portfolio)", value=True)
+        assets_for_plot = trades_df if show_all_assets else trades_df[trades_df['asset'] == (selected_asset or DEFAULT_ASSET)]
+        pnl_col = "cumulative_pnl" if show_all_assets else "asset_cumulative_pnl"
+        title = "Total Portfolio Cumulative P&L" if show_all_assets else f"Cumulative P&L for {selected_asset or DEFAULT_ASSET}"
+        
+        if assets_for_plot.empty or assets_for_plot[pnl_col].sum() == 0:
+            st.warning("No P&L data to display.")
+        else:
+            fig_pnl = go.Figure()
+            fig_pnl.add_trace(go.Scatter(x=assets_for_plot["timestamp"], y=assets_for_plot[pnl_col], mode="lines", name="Cumulative P&L"))
+            fig_pnl.update_layout(title=title, template="plotly_white", yaxis_title="P&L (USD)")
+            st.plotly_chart(fig_pnl, use_container_width=True)
