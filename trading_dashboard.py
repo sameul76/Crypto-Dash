@@ -21,8 +21,8 @@ DEFAULT_ASSET = "GIGA-USD"
 # =========================
 # Google Drive CSV Links
 # =========================
-TRADES_LINK = "https://drive.google.com/file/d/1En36aZ-mYP1qmmFR5LZwYxJHmygikRhb/view?usp=sharing"
-MARKET_LINK = "https://drive.google.com/file/d/18SSSVO4U0jhCVL_SiZjQgd50Ei2dJVKK/view?usp=sharing"  # OHLCV + features
+TRADES_LINK = "https://drive.google.com/file/d/1VAzmByA9sLQ8gHMe_JH7ELlByqnoUIca/view?usp=sharing"
+MARKET_LINK = "https://drive.google.com/file/d/1pRoTUFoU4MtwaBSNbMhZmDS7fiQdicVi/view?usp=sharing"  # OHLCV + features
 
 # =========================
 # Helpers — data processing
@@ -333,3 +333,4 @@ with tab2:
             st.warning("No P&L data to display for the selected scope.")
     else:
         st.warning("No trade data loaded.")
+
