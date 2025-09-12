@@ -268,11 +268,37 @@ def load_data(trades_link, market_link):
     trades = pd.read_parquet(io.BytesIO(raw_trades)) if raw_trades else pd.DataFrame()
     
     raw_market = download_drive_file_bytes(market_link)
-    market = pd.read_parquet(io.BytesIO(raw_market)) if raw_market else pd.DataFrame()  # Changed to read_parquet
+    market = pd.read_parquet(io.BytesIO(raw_market)) if raw_market else pd.DataFrame()
 
     if not trades.empty:
         trades = lower_strip_cols(trades)
-        trades = trades.rename(columns={"product_id": "asset", "side": "action", "size": "quantity"})
+        
+        # Debug: Print column names to understand the structure
+        st.write("DEBUG - Trade data columns:", list(trades.columns))
+        
+        # More flexible column mapping for the bot's output format
+        column_mapping = {}
+        if "product_id" in trades.columns:
+            column_mapping["product_id"] = "asset"
+        if "side" in trades.columns:
+            column_mapping["side"] = "action"
+        elif "action" not in trades.columns and "side" not in trades.columns:
+            # If neither exists, check for other possible action columns
+            for col in trades.columns:
+                if "side" in col.lower() or "action" in col.lower():
+                    column_mapping[col] = "action"
+                    break
+        if "size" in trades.columns:
+            column_mapping["size"] = "quantity"
+        elif "quantity" not in trades.columns:
+            # Look for quantity-like columns
+            for col in trades.columns:
+                if "qty" in col.lower() or "amount" in col.lower():
+                    column_mapping[col] = "quantity"
+                    break
+        
+        trades = trades.rename(columns=column_mapping)
+        
         if 'timestamp' in trades.columns:
             trades['timestamp'] = to_local_naive(trades['timestamp'])
         for col in ["quantity", "price", "usd_value"]:
