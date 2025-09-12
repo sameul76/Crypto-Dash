@@ -19,10 +19,10 @@ LOCAL_TZ = "America/Los_Angeles"
 DEFAULT_ASSET = "GIGA-USD"
 
 # =========================
-# Google Drive CSV Links
+# Google Drive Links - Updated for PAXG Strategy (Synced Files)
 # =========================
-TRADES_LINK = "https://drive.google.com/file/d/1VAzmByA9sLQ8gHMe_JH7ELlByqnoUIca/view?usp=sharing"
-MARKET_LINK = "https://drive.google.com/file/d/1pRoTUFoU4MtwaBSNbMhZmDS7fiQdicVi/view?usp=sharing"  # OHLCV + features
+TRADES_LINK = "https://drive.google.com/file/d/19ASI0V2NkaeIJT6UNZemRUgUWubBhdPT/view?usp=sharing"  # trade_history_master.parquet
+MARKET_LINK = "https://drive.google.com/file/d/1uVpl125-qzH1Q9KrBEt-vFHTEphzptNQ/view?usp=sharing"   # features_latest.parquet
 
 # =========================
 # Helpers — data processing
