@@ -322,11 +322,15 @@ tab1, tab2, tab3 = st.tabs(["📈 Price & Trades", "💰 P&L Analysis", "📜 Tr
 with tab1:
     assets = sorted(market_df["asset"].dropna().unique()) if not market_df.empty else []
     if assets:
-        default_index = assets.index(DEFAULT_ASET) if DEFAULT_ASSET in assets else 0
-        selected_asset = st.selectbox("Select Asset", assets, index=default_index)
+        # Reinstate the dropdown for selecting a single asset
+        default_index = assets.index(DEFAULT_ASSET) if DEFAULT_ASSET in assets else 0
+        selected_asset = st.selectbox("Select Asset to View", assets, index=default_index)
+        
         range_choice = st.selectbox("Select Date Range", ["30 days", "7 days", "1 day", "All"], index=0)
+        st.markdown("---")
 
         df = market_df[market_df["asset"] == selected_asset].sort_values("timestamp")
+        
         if not df.empty:
             end_date = df["timestamp"].max()
             if range_choice == "1 day": start_date = end_date - timedelta(days=1)
@@ -336,74 +340,66 @@ with tab1:
 
             vis = df[(df["timestamp"] >= start_date) & (df["timestamp"] <= end_date)].copy()
             
-            # 1. Create hover text with P_up and P_down
-            hover_text = []
-            for i, row in vis.iterrows():
-                p_up = row.get('p_up', float('nan'))
-                p_down = row.get('p_down', float('nan'))
-                text = f"<b>P(Up):</b> {p_up:.3f}<br><b>P(Down):</b> {p_down:.3f}"
-                hover_text.append(text)
+            if not vis.empty:
+                # Create hover text with P_up and P_down
+                hover_text = []
+                for i, row in vis.iterrows():
+                    p_up = row.get('p_up', float('nan'))
+                    p_down = row.get('p_down', float('nan'))
+                    text = f"<b>P(Up):</b> {p_up:.3f}<br><b>P(Down):</b> {p_down:.3f}"
+                    hover_text.append(text)
 
-            fig = go.Figure(data=go.Candlestick(
-                x=vis["timestamp"], open=vis["open"], high=vis["high"], low=vis["low"], close=vis["close"],
-                name=selected_asset,
-                text=hover_text,
-                hoverinfo="x+y+text"
-            ))
-            
-            # NEW: Add a line connecting the close price of each candle
-            fig.add_trace(go.Scatter(
-                x=vis["timestamp"],
-                y=vis["close"],
-                mode='lines',
-                name='Close Price Line',
-                line=dict(color='rgba(100, 100, 100, 0.5)', width=1),
-                hoverinfo='none' # Hide hover info for this line to avoid clutter
-            ))
-
-            if not trades_df.empty:
-                asset_trades = trades_df[(trades_df["asset"] == selected_asset) & (trades_df["timestamp"] >= start_date) & (trades_df["timestamp"] <= end_date)]
+                fig = go.Figure(data=go.Candlestick(
+                    x=vis["timestamp"], open=vis["open"], high=vis["high"], low=vis["low"], close=vis["close"],
+                    name=selected_asset, text=hover_text, hoverinfo="x+y+text"
+                ))
                 
-                # 2. Add more visible trade markers
-                for action in ["buy", "sell"]:
-                    action_trades = asset_trades[asset_trades["action"] == action]
-                    if not action_trades.empty:
-                        display_name, color, symbol = get_trade_display_info(action)
-                        fig.add_trace(go.Scatter(
-                            x=action_trades["timestamp"], y=action_trades["price"], mode="markers", name=display_name,
-                            marker=dict(symbol=symbol, size=12, color=color, line=dict(width=2, color='Black')),
-                            hovertemplate=f"<b>{display_name}</b><br>Price: %{{y:.6f}}<br>Reason: %{{text}}<extra></extra>",
-                            text=action_trades['reason']
-                        ))
+                fig.add_trace(go.Scatter(
+                    x=vis["timestamp"], y=vis["close"], mode='lines', name='Close Price Line',
+                    line=dict(color='rgba(100, 100, 100, 0.5)', width=1), hoverinfo='none'
+                ))
 
-                # 3. Add lines connecting trade pairs
-                sorted_trades = asset_trades.sort_values("timestamp")
-                open_trade = None
-                for i, trade in sorted_trades.iterrows():
-                    if trade['action'] == 'buy' and open_trade is None:
-                        open_trade = trade
-                    elif trade['action'] == 'sell' and open_trade is not None:
-                        # This is a completed trade pair
-                        pnl = trade['price'] - open_trade['price']
-                        line_color = "rgba(0, 255, 0, 0.5)" if pnl >= 0 else "rgba(255, 0, 0, 0.5)"
-                        fig.add_trace(go.Scatter(
-                            x=[open_trade['timestamp'], trade['timestamp']],
-                            y=[open_trade['price'], trade['price']],
-                            mode='lines',
-                            line=dict(color=line_color, width=2, dash='dot'),
-                            showlegend=False,
-                            hoverinfo='none'
-                        ))
-                        open_trade = None # Reset for the next pair
+                if not trades_df.empty:
+                    asset_trades = trades_df[(trades_df["asset"] == selected_asset) & (trades_df["timestamp"] >= start_date) & (trades_df["timestamp"] <= end_date)]
+                    
+                    for action in ["buy", "sell"]:
+                        action_trades = asset_trades[asset_trades["action"] == action]
+                        if not action_trades.empty:
+                            display_name, color, symbol = get_trade_display_info(action)
+                            fig.add_trace(go.Scatter(
+                                x=action_trades["timestamp"], y=action_trades["price"], mode="markers", name=display_name,
+                                marker=dict(symbol=symbol, size=12, color=color, line=dict(width=2, color='Black')),
+                                hovertemplate=f"<b>{display_name}</b><br>Price: %{{y:.6f}}<br>Reason: %{{text}}<extra></extra>",
+                                text=action_trades['reason']
+                            ))
 
+                    sorted_trades = asset_trades.sort_values("timestamp")
+                    open_trade = None
+                    for i, trade in sorted_trades.iterrows():
+                        if trade['action'] == 'buy' and open_trade is None:
+                            open_trade = trade
+                        elif trade['action'] == 'sell' and open_trade is not None:
+                            pnl = trade['price'] - open_trade['price']
+                            line_color = "rgba(0, 255, 0, 0.5)" if pnl >= 0 else "rgba(255, 0, 0, 0.5)"
+                            fig.add_trace(go.Scatter(
+                                x=[open_trade['timestamp'], trade['timestamp']],
+                                y=[open_trade['price'], trade['price']],
+                                mode='lines', line=dict(color=line_color, width=2, dash='dot'),
+                                showlegend=False, hoverinfo='none'
+                            ))
+                            open_trade = None
 
-            fig.update_layout(
-                template="plotly_white", xaxis_rangeslider_visible=False, hovermode="x unified",
-                yaxis_title="Price (USD)", title=f"{selected_asset} — Price & Trade Activity",
-                legend=dict(orientation="h", y=1.03, x=0.5, xanchor="center"),
-                height=600, margin=dict(l=40, r=20, t=60, b=40)
-            )
-            st.plotly_chart(fig, use_container_width=True)
+                fig.update_layout(
+                    template="plotly_white", xaxis_rangeslider_visible=False, hovermode="x unified",
+                    yaxis_title="Price (USD)", title=f"{selected_asset} — Price & Trade Activity",
+                    legend=dict(orientation="h", y=1.03, x=0.5, xanchor="center"),
+                    height=600, margin=dict(l=40, r=20, t=60, b=40)
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.write(f"No data for {selected_asset} in the selected date range.")
+        else:
+            st.warning(f"No market data found for {selected_asset}.")
     else:
         st.warning("Market data not loaded or available.")
 
