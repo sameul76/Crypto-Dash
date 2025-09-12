@@ -24,7 +24,7 @@ DEFAULT_ASSET = "GIGA-USD"
 # This is the trade log file (trade_history_master.parquet)
 TRADES_LINK = "https://drive.google.com/file/d/1t60dS-c9R28evHCC-6AJ7sZZKQqPJA81/view?usp=sharing"
 # This is the features/market data file (trading_data_complete.parquet)
-MARKET_LINK = "https://drive.google.com/file/d/1UNefpfjC7Ghnr5dpEwRHQdUb_ipw_aP9/view?usp=sharing"
+MARKET_LINK = "https://drive.google.com/file/d/1BGV1Viib4nA3ge7xqCZ4v-oKDkwYmiVj/view?usp=sharing"
 
 # =========================
 # Helpers — data processing
@@ -302,19 +302,60 @@ with st.sidebar:
     
     st.markdown("---")
     
-    st.markdown("## 📈 Current Holdings")
+    st.markdown("## 📈 Current Holdings & Watchlist")
+    open_positions_df = pd.DataFrame()
     if not market_df.empty and not trades_df.empty:
         open_positions_df = calculate_open_positions(trades_df, market_df)
-        if not open_positions_df.empty:
-            for _, pos in open_positions_df.iterrows():
-                pnl = pos["Unrealized P&L ($)"]
-                color = "lightgreen" if pnl > 0 else "salmon"
-                st.markdown(f'<p style="color:{color}; font-weight:bold; margin-bottom:0px;">{pos["Asset"]}</p>', unsafe_allow_html=True)
-                st.caption(f"Qty: {pos['Quantity']:.4f} | Entry: ${pos['Avg. Entry Price']:.6f} | P&L: ${pnl:.2f}")
-        else:
-            st.info("No open positions.")
-    else:
-        st.info("No data to calculate open positions.")
+
+    # Display open positions first
+    if not open_positions_df.empty:
+        st.markdown("**Open Positions**")
+        for _, pos in open_positions_df.iterrows():
+            pnl = pos["Unrealized P&L ($)"]
+            color = "#16a34a" if pnl >= 0 else "#ef4444" # Darker green
+            asset_name = pos["Asset"]
+            current_price = pos["Current Price"]
+            price_format = ".6f" if current_price < 1 else ".2f"
+            
+            st.markdown(
+                f"""
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: -10px;">
+                    <p style="color:{color}; font-weight:bold; margin: 0;">{asset_name}</p>
+                    <p style="color:black; font-weight:bold; margin: 0;">${current_price:{price_format}}</p>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+            st.caption(f"Qty: {pos['Quantity']:.4f} | Entry: ${pos['Avg. Entry Price']:.6f} | P&L: ${pnl:.2f}")
+        st.markdown("---")
+
+
+    # Display watchlist for assets with no open position
+    if not market_df.empty:
+        st.markdown("**Watchlist**")
+        all_assets = sorted(market_df["asset"].dropna().unique())
+        held_assets = set(open_positions_df['Asset']) if not open_positions_df.empty else set()
+        
+        for asset in all_assets:
+            if asset not in held_assets:
+                latest_market_data = market_df[market_df['asset'] == asset]
+                if not latest_market_data.empty:
+                    last_price = latest_market_data.sort_values('timestamp').iloc[-1]['close']
+                    price_format = ".6f" if last_price < 1 else ".2f"
+                    price_str = f"${last_price:{price_format}}"
+                else:
+                    price_str = "N/A"
+
+                st.markdown(
+                    f"""
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <p style="color:grey; margin: 0;">{asset}</p>
+                        <p style="color:grey; font-weight:bold; margin: 0;">{price_str}</p>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
 
 # Main content tabs
 tab1, tab2, tab3 = st.tabs(["📈 Price & Trades", "💰 P&L Analysis", "📜 Trade History"])
@@ -327,7 +368,16 @@ with tab1:
         selected_asset = st.selectbox("Select Asset to View", assets, index=default_index)
         
         range_choice = st.selectbox("Select Date Range", ["30 days", "7 days", "1 day", "All"], index=0)
+        
+        # Display the last price metric above the chart
+        if not market_df.empty:
+            asset_market_data = market_df[market_df['asset'] == selected_asset]
+            if not asset_market_data.empty:
+                last_price = asset_market_data.sort_values('timestamp').iloc[-1]['close']
+                st.metric(f"Last Price for {selected_asset}", f"${last_price:,.6f}" if last_price < 1 else f"${last_price:,.2f}")
+        
         st.markdown("---")
+
 
         df = market_df[market_df["asset"] == selected_asset].sort_values("timestamp")
         
@@ -341,7 +391,6 @@ with tab1:
             vis = df[(df["timestamp"] >= start_date) & (df["timestamp"] <= end_date)].copy()
             
             if not vis.empty:
-                # Create hover text with P_up and P_down
                 hover_text = []
                 for i, row in vis.iterrows():
                     p_up = row.get('p_up', float('nan'))
@@ -431,6 +480,4 @@ with tab3:
         st.dataframe(display_df.sort_values("Time", ascending=False), use_container_width=True)
     else:
         st.warning("No trade history to display.")
-
-
 
