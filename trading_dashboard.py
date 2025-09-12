@@ -268,7 +268,7 @@ def load_data(trades_link, market_link):
     trades = pd.read_parquet(io.BytesIO(raw_trades)) if raw_trades else pd.DataFrame()
     
     raw_market = download_drive_file_bytes(market_link)
-    market = pd.read_csv(io.BytesIO(raw_market)) if raw_market else pd.DataFrame()
+    market = pd.read_parquet(io.BytesIO(raw_market)) if raw_market else pd.DataFrame()  # Changed to read_parquet
 
     if not trades.empty:
         trades = lower_strip_cols(trades)
