@@ -53,6 +53,25 @@ def unify_symbol(val: str) -> str:
         return "GIGA-USD"
     return s
 
+def normalize_prob_columns(df: pd.DataFrame) -> pd.DataFrame:
+    rename_map = {}
+    p_up_variations = {"p_up", "p-up", "pup", "pup prob", "p up"}
+    p_down_variations = {"p_down", "p-down", "pdown", "pdown prob", "p down"}
+
+    for col in df.columns:
+        col_lower = col.lower().replace("_", " ").replace("-", " ")
+        if col_lower in p_up_variations:
+            rename_map[col] = "p_up"
+        elif col_lower in p_down_variations:
+            rename_map[col] = "p_down"
+
+    if rename_map:
+        df = df.rename(columns=rename_map)
+
+    if "p_up" not in df.columns: df["p_up"] = np.nan
+    if "p_down" not in df.columns: df["p_down"] = np.nan
+    return df
+
 def calculate_pnl_and_metrics(trades_df):
     if trades_df is None or trades_df.empty:
         return {}, pd.DataFrame(), {}
@@ -208,20 +227,19 @@ def load_data(trades_link, market_link):
     if not trades.empty:
         trades = lower_strip_cols(trades)
         
-        # *** KEY MODIFICATION: Align column names from bot to app ***
         column_mapping = {}
         if "product_id" in trades.columns:
             column_mapping["product_id"] = "asset"
         if "side" in trades.columns:
-            column_mapping["side"] = "action" # Rename 'side' to 'action'
+            column_mapping["side"] = "action"
         if "size" in trades.columns:
-            column_mapping["size"] = "quantity" # Rename 'size' to 'quantity'
+            column_mapping["size"] = "quantity"
         
         trades = trades.rename(columns=column_mapping)
         
         if 'timestamp' in trades.columns:
             trades['timestamp'] = to_local_naive(trades['timestamp'])
-        for col in ["quantity", "price", "usd_value"]:
+        for col in ["quantity", "price", "usd_value", "p_up", "p_down"]:
             if col in trades.columns:
                 trades[col] = pd.to_numeric(trades[col], errors="coerce")
 
@@ -231,7 +249,8 @@ def load_data(trades_link, market_link):
         if 'timestamp' in market.columns:
             market['timestamp'] = to_local_naive(market['timestamp'])
         market["asset"] = market["asset"].apply(unify_symbol)
-        for col in ["open", "high", "low", "close"]:
+        market = normalize_prob_columns(market) # Ensure p_up/p_down exist
+        for col in ["open", "high", "low", "close", "p_up", "p_down"]:
             if col in market.columns:
                 market[col] = pd.to_numeric(market[col], errors="coerce")
 
@@ -303,7 +322,7 @@ tab1, tab2, tab3 = st.tabs(["📈 Price & Trades", "💰 P&L Analysis", "📜 Tr
 with tab1:
     assets = sorted(market_df["asset"].dropna().unique()) if not market_df.empty else []
     if assets:
-        default_index = assets.index(DEFAULT_ASSET) if DEFAULT_ASSET in assets else 0
+        default_index = assets.index(DEFAULT_ASET) if DEFAULT_ASSET in assets else 0
         selected_asset = st.selectbox("Select Asset", assets, index=default_index)
         range_choice = st.selectbox("Select Date Range", ["30 days", "7 days", "1 day", "All"], index=0)
 
@@ -317,24 +336,66 @@ with tab1:
 
             vis = df[(df["timestamp"] >= start_date) & (df["timestamp"] <= end_date)].copy()
             
+            # 1. Create hover text with P_up and P_down
+            hover_text = []
+            for i, row in vis.iterrows():
+                p_up = row.get('p_up', float('nan'))
+                p_down = row.get('p_down', float('nan'))
+                text = f"<b>P(Up):</b> {p_up:.3f}<br><b>P(Down):</b> {p_down:.3f}"
+                hover_text.append(text)
+
             fig = go.Figure(data=go.Candlestick(
                 x=vis["timestamp"], open=vis["open"], high=vis["high"], low=vis["low"], close=vis["close"],
-                name=selected_asset
+                name=selected_asset,
+                text=hover_text,
+                hoverinfo="x+y+text"
+            ))
+            
+            # NEW: Add a line connecting the close price of each candle
+            fig.add_trace(go.Scatter(
+                x=vis["timestamp"],
+                y=vis["close"],
+                mode='lines',
+                name='Close Price Line',
+                line=dict(color='rgba(100, 100, 100, 0.5)', width=1),
+                hoverinfo='none' # Hide hover info for this line to avoid clutter
             ))
 
             if not trades_df.empty:
                 asset_trades = trades_df[(trades_df["asset"] == selected_asset) & (trades_df["timestamp"] >= start_date) & (trades_df["timestamp"] <= end_date)]
                 
+                # 2. Add more visible trade markers
                 for action in ["buy", "sell"]:
                     action_trades = asset_trades[asset_trades["action"] == action]
                     if not action_trades.empty:
                         display_name, color, symbol = get_trade_display_info(action)
                         fig.add_trace(go.Scatter(
                             x=action_trades["timestamp"], y=action_trades["price"], mode="markers", name=display_name,
-                            marker=dict(symbol=symbol, size=10, color=color, line=dict(width=1, color='Black')),
+                            marker=dict(symbol=symbol, size=12, color=color, line=dict(width=2, color='Black')),
                             hovertemplate=f"<b>{display_name}</b><br>Price: %{{y:.6f}}<br>Reason: %{{text}}<extra></extra>",
                             text=action_trades['reason']
                         ))
+
+                # 3. Add lines connecting trade pairs
+                sorted_trades = asset_trades.sort_values("timestamp")
+                open_trade = None
+                for i, trade in sorted_trades.iterrows():
+                    if trade['action'] == 'buy' and open_trade is None:
+                        open_trade = trade
+                    elif trade['action'] == 'sell' and open_trade is not None:
+                        # This is a completed trade pair
+                        pnl = trade['price'] - open_trade['price']
+                        line_color = "rgba(0, 255, 0, 0.5)" if pnl >= 0 else "rgba(255, 0, 0, 0.5)"
+                        fig.add_trace(go.Scatter(
+                            x=[open_trade['timestamp'], trade['timestamp']],
+                            y=[open_trade['price'], trade['price']],
+                            mode='lines',
+                            line=dict(color=line_color, width=2, dash='dot'),
+                            showlegend=False,
+                            hoverinfo='none'
+                        ))
+                        open_trade = None # Reset for the next pair
+
 
             fig.update_layout(
                 template="plotly_white", xaxis_rangeslider_visible=False, hovermode="x unified",
@@ -368,9 +429,9 @@ with tab2:
 with tab3:
     if not trades_df.empty:
         st.markdown("### Complete Trade Log")
-        display_df = trades_df[["timestamp", "asset", "action", "quantity", "price", "usd_value", "reason"]].copy()
+        display_df = trades_df[["timestamp", "asset", "action", "quantity", "price", "usd_value", "reason", "p_up", "p_down"]].copy()
         display_df["timestamp"] = display_df["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S")
-        display_df.columns = ["Time", "Asset", "Action", "Quantity", "Price", "USD Value", "Reason"]
+        display_df.columns = ["Time", "Asset", "Action", "Quantity", "Price", "USD Value", "Reason", "P(Up)", "P(Down)"]
         st.dataframe(display_df.sort_values("Time", ascending=False), use_container_width=True)
     else:
         st.warning("No trade history to display.")
