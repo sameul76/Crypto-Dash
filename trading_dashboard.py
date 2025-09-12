@@ -14,7 +14,7 @@ import pyarrow
 # =========================
 # App Configuration
 # =========================
-st.set_page_config(page_title="Giga Trading Strategy Analytics", layout="wide")
+st.set_page_config(page_title="Crypto Trading Strategy", layout="wide")
 LOCAL_TZ = "America/Los_Angeles"
 DEFAULT_ASSET = "GIGA-USD"
 
@@ -241,12 +241,12 @@ def load_data(trades_link, market_link):
 # =========================
 # Main App
 # =========================
-st.markdown("## Giga Trading Strategy Dashboard")
+st.markdown("## Crypto Trading Strategy")
 st.caption("ML Signals with Price-Based Exit Logic")
 trades_df, pnl_summary, summary_stats, market_df = load_data(TRADES_LINK, MARKET_LINK)
 
 with st.sidebar:
-    st.markdown("<h1 style='text-align: center;'>Giga Strategy</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center;'>Crypto Strategy</h1>", unsafe_allow_html=True)
     
     if not trades_df.empty and 'timestamp' in trades_df.columns:
         min_date, max_date = trades_df['timestamp'].min(), trades_df['timestamp'].max()
@@ -374,3 +374,4 @@ with tab3:
         st.dataframe(display_df.sort_values("Time", ascending=False), use_container_width=True)
     else:
         st.warning("No trade history to display.")
+
