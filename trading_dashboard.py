@@ -24,7 +24,7 @@ DEFAULT_ASSET = "GIGA-USD"
 # This is the trade log file (trade_history_master.parquet)
 TRADES_LINK = "https://drive.google.com/file/d/1t60dS-c9R28evHCC-6AJ7sZZKQqPJA81/view?usp=sharing"
 # This is the features/market data file (trading_data_complete.parquet)
-MARKET_LINK = "https://drive.google.com/file/d/1BSayrCC8aXHBCtDlpFSxIJR7TqmnkhD9/view?usp=sharing"
+MARKET_LINK = "https://drive.google.com/file/d/1UNefpfjC7Ghnr5dpEwRHQdUb_ipw_aP9/view?usp=sharing"
 
 # =========================
 # Helpers — data processing
@@ -431,5 +431,6 @@ with tab3:
         st.dataframe(display_df.sort_values("Time", ascending=False), use_container_width=True)
     else:
         st.warning("No trade history to display.")
+
 
 
