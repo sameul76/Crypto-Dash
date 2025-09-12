@@ -270,40 +270,52 @@ def load_data(trades_link, market_link):
     raw_market = download_drive_file_bytes(market_link)
     market = pd.read_parquet(io.BytesIO(raw_market)) if raw_market else pd.DataFrame()
 
+    # Check if the trades data is actually market data (wrong file)
     if not trades.empty:
         trades = lower_strip_cols(trades)
         
-        # Debug: Print column names to understand the structure
-        st.write("DEBUG - Trade data columns:", list(trades.columns))
+        # Check if this looks like market data instead of trade data
+        market_indicators = ['adx_14', 'rsi_14', 'macd_12_26_9', 'ema_20', 'p_up', 'p_down']
+        trade_indicators = ['side', 'action', 'size', 'quantity', 'trade_type']
         
-        # More flexible column mapping for the bot's output format
-        column_mapping = {}
-        if "product_id" in trades.columns:
-            column_mapping["product_id"] = "asset"
-        if "side" in trades.columns:
-            column_mapping["side"] = "action"
-        elif "action" not in trades.columns and "side" not in trades.columns:
-            # If neither exists, check for other possible action columns
-            for col in trades.columns:
-                if "side" in col.lower() or "action" in col.lower():
-                    column_mapping[col] = "action"
-                    break
-        if "size" in trades.columns:
-            column_mapping["size"] = "quantity"
-        elif "quantity" not in trades.columns:
-            # Look for quantity-like columns
-            for col in trades.columns:
-                if "qty" in col.lower() or "amount" in col.lower():
-                    column_mapping[col] = "quantity"
-                    break
+        has_market_cols = any(col in trades.columns for col in market_indicators)
+        has_trade_cols = any(col in trades.columns for col in trade_indicators)
         
-        trades = trades.rename(columns=column_mapping)
-        
-        if 'timestamp' in trades.columns:
-            trades['timestamp'] = to_local_naive(trades['timestamp'])
-        for col in ["quantity", "price", "usd_value"]:
-            if col in trades.columns: 
-                trades[col] = pd.to_numeric(trades[col], errors="coerce")
+        if has_market_cols and not has_trade_cols:
+            st.warning("🔄 The trade data file appears to contain market data instead of trade records. This usually means:")
+            st.warning("• Your trading bot hasn't generated any trades yet, OR")
+            st.warning("• The Google Drive file IDs are mixed up")
+            st.info("The dashboard will show market data but no trade history until actual trades are generated.")
+            trades = pd.DataFrame()  # Clear the trades data since it's not actually trades
+        else:
+            # Process actual trade data
+            column_mapping = {}
+            if "product_id" in trades.columns:
+                column_mapping["product_id"] = "asset"
+            if "side" in trades.columns:
+                column_mapping["side"] = "action"
+            elif "action" not in trades.columns:
+                # Look for action-like columns
+                for col in trades.columns:
+                    if "side" in col.lower() or "action" in col.lower():
+                        column_mapping[col] = "action"
+                        break
+            if "size" in trades.columns:
+                column_mapping["size"] = "quantity"
+            elif "quantity" not in trades.columns:
+                # Look for quantity-like columns
+                for col in trades.columns:
+                    if "qty" in col.lower() or "amount" in col.lower():
+                        column_mapping[col] = "quantity"
+                        break
+            
+            trades = trades.rename(columns=column_mapping)
+            
+            if 'timestamp' in trades.columns:
+                trades['timestamp'] = to_local_naive(trades['timestamp'])
+            for col in ["quantity", "price", "usd_value"]:
+                if col in trades.columns: 
+                    trades[col] = pd.to_numeric(trades[col], errors="coerce")
     
     if not market.empty:
         market = lower_strip_cols(market)
