@@ -424,7 +424,11 @@ with tab1:
     if assets:
         default_index = assets.index(DEFAULT_ASSET) if DEFAULT_ASSET in assets else 0
         selected_asset = st.selectbox("Select Asset to View", assets, index=default_index, key="asset_select")
-        range_choice = st.selectbox("Select Date Range", ["30 days", "7 days", "1 day", "All"], index=0, key="range_select")
+        
+        # Adjusted time ranges for minute-level data
+        range_choice = st.selectbox("Select Date Range", 
+            ["4 hours", "12 hours", "1 day", "3 days", "7 days", "30 days", "All"], 
+            index=0, key="range_select")
 
         # Last price metric
         asset_market_data = market_df[market_df['asset'] == selected_asset] if not market_df.empty else pd.DataFrame()
@@ -432,13 +436,43 @@ with tab1:
             last_price = asset_market_data.sort_values('timestamp').iloc[-1]['close']
             st.metric(f"Last Price for {selected_asset}", f"${last_price:,.6f}" if last_price < 1 else f"${last_price:,.2f}")
 
+        # Data inspection section
+        with st.expander("🔍 Data Resolution Inspector"):
+            if not asset_market_data.empty:
+                df_sorted = asset_market_data.sort_values('timestamp')
+                time_diffs = df_sorted['timestamp'].diff().dropna()
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.write(f"**Total Data Points:** {len(df_sorted):,}")
+                    st.write(f"**Date Range:** {df_sorted['timestamp'].min().strftime('%Y-%m-%d %H:%M')} to {df_sorted['timestamp'].max().strftime('%Y-%m-%d %H:%M')}")
+                with col2:
+                    if len(time_diffs) > 0:
+                        mode_diff = time_diffs.mode()[0] if len(time_diffs.mode()) > 0 else time_diffs.median()
+                        st.write(f"**Most Common Interval:** {mode_diff}")
+                        st.write(f"**Min Interval:** {time_diffs.min()}")
+                        st.write(f"**Max Interval:** {time_diffs.max()}")
+                with col3:
+                    recent_data = df_sorted.tail(10)
+                    st.write("**Last 10 Timestamps:**")
+                    for ts in recent_data['timestamp']:
+                        st.write(f"• {ts.strftime('%m/%d %H:%M:%S')}")
+
         st.markdown("---")
 
         df = asset_market_data.sort_values("timestamp")
         if not df.empty:
             end_date = df["timestamp"].max()
-            if range_choice == "1 day":
+            
+            # More granular time ranges for minute data
+            if range_choice == "4 hours":
+                start_date = end_date - timedelta(hours=4)
+            elif range_choice == "12 hours":
+                start_date = end_date - timedelta(hours=12)
+            elif range_choice == "1 day":
                 start_date = end_date - timedelta(days=1)
+            elif range_choice == "3 days":
+                start_date = end_date - timedelta(days=3)
             elif range_choice == "7 days":
                 start_date = end_date - timedelta(days=7)
             elif range_choice == "30 days":
@@ -448,11 +482,13 @@ with tab1:
 
             vis = df[(df["timestamp"] >= start_date) & (df["timestamp"] <= end_date)].copy()
 
-            if not vis.empty and len(vis) > 1:
+            if not vis.empty:
+                st.info(f"Showing {len(vis):,} candles from {start_date.strftime('%Y-%m-%d %H:%M')} to {end_date.strftime('%Y-%m-%d %H:%M')}")
+                
                 # Create the main candlestick chart
                 fig = go.Figure()
                 
-                # Add candlestick data
+                # Add candlestick data with better styling for minute data
                 fig.add_trace(go.Candlestick(
                     x=vis["timestamp"],
                     open=vis["open"],
@@ -460,36 +496,47 @@ with tab1:
                     low=vis["low"],
                     close=vis["close"],
                     name=selected_asset,
-                    increasing_line_color='#00ff88',
-                    decreasing_line_color='#ff4444',
-                    increasing_fillcolor='rgba(0, 255, 136, 0.3)',
-                    decreasing_fillcolor='rgba(255, 68, 68, 0.3)'
+                    increasing_line_color='#26a69a',
+                    decreasing_line_color='#ef5350',
+                    increasing_fillcolor='rgba(38, 166, 154, 0.5)',
+                    decreasing_fillcolor='rgba(239, 83, 80, 0.5)',
+                    line=dict(width=1)
                 ))
 
-                # Add ML probability data as hover info
+                # Add ML probability data overlay
                 if 'p_up' in vis.columns and 'p_down' in vis.columns:
-                    # Create hover text for probabilities
-                    hover_text = []
-                    for _, row in vis.iterrows():
-                        p_up = row.get('p_up', float('nan'))
-                        p_down = row.get('p_down', float('nan'))
-                        if pd.notna(p_up) and pd.notna(p_down):
-                            text = f"P(Up): {p_up:.3f} | P(Down): {p_down:.3f}"
-                            hover_text.append(text)
-                        else:
-                            hover_text.append("")
+                    # Filter out NaN probabilities
+                    prob_data = vis.dropna(subset=['p_up', 'p_down'])
                     
-                    # Add invisible scatter trace for probability hover info
-                    fig.add_trace(go.Scatter(
-                        x=vis["timestamp"],
-                        y=vis["close"],
-                        mode='markers',
-                        marker=dict(size=8, opacity=0),  # Invisible markers
-                        text=hover_text,
-                        hovertemplate='<b>%{text}</b><br>Close: $%{y:.6f}<extra></extra>',
-                        name='ML Probabilities',
-                        showlegend=False
-                    ))
+                    if not prob_data.empty:
+                        # Create probability confidence indicator
+                        prob_data = prob_data.copy()
+                        prob_data['confidence'] = abs(prob_data['p_up'] - prob_data['p_down'])
+                        prob_data['signal_strength'] = prob_data['confidence'] * 100
+                        
+                        # Add probability markers with size based on confidence
+                        colors = ['#ff6b6b' if p_down > p_up else '#51cf66' 
+                                 for p_up, p_down in zip(prob_data['p_up'], prob_data['p_down'])]
+                        
+                        fig.add_trace(go.Scatter(
+                            x=prob_data["timestamp"],
+                            y=prob_data["close"],
+                            mode='markers',
+                            marker=dict(
+                                size=prob_data['signal_strength'] / 5 + 3,  # Size based on confidence
+                                color=colors,
+                                opacity=0.7,
+                                line=dict(width=1, color='white')
+                            ),
+                            name='ML Signals',
+                            customdata=list(zip(prob_data['p_up'], prob_data['p_down'], prob_data['confidence'])),
+                            hovertemplate='<b>ML Signal</b><br>' +
+                                         'Time: %{x}<br>' +
+                                         'Price: $%{y:.6f}<br>' +
+                                         'P(Up): %{customdata[0]:.3f}<br>' +
+                                         'P(Down): %{customdata[1]:.3f}<br>' +
+                                         'Confidence: %{customdata[2]:.3f}<extra></extra>'
+                        ))
 
                 # Add trade markers
                 if not trades_df.empty:
@@ -510,15 +557,18 @@ with tab1:
                                 name="BUY",
                                 marker=dict(
                                     symbol='triangle-up',
-                                    size=15,
-                                    color='#00ff88',
-                                    line=dict(width=2, color='#ffffff')
+                                    size=16,
+                                    color='#4caf50',
+                                    line=dict(width=2, color='white')
                                 ),
-                                text=['BUY'] * len(buy_trades),
+                                text=['▲'] * len(buy_trades),
                                 textposition="top center",
-                                textfont=dict(size=10, color='#00ff88'),
-                                hovertemplate='<b>BUY</b><br>Price: $%{y:.6f}<br>Reason: %{customdata}<extra></extra>',
-                                customdata=buy_trades.get('reason', '')
+                                textfont=dict(size=12, color='#4caf50'),
+                                customdata=buy_trades.get('reason', ''),
+                                hovertemplate='<b>BUY ORDER</b><br>' +
+                                             'Time: %{x}<br>' +
+                                             'Price: $%{y:.6f}<br>' +
+                                             'Reason: %{customdata}<extra></extra>'
                             ))
                         
                         # Add sell trades
@@ -531,15 +581,18 @@ with tab1:
                                 name="SELL",
                                 marker=dict(
                                     symbol='triangle-down',
-                                    size=15,
-                                    color='#ff4444',
-                                    line=dict(width=2, color='#ffffff')
+                                    size=16,
+                                    color='#f44336',
+                                    line=dict(width=2, color='white')
                                 ),
-                                text=['SELL'] * len(sell_trades),
+                                text=['▼'] * len(sell_trades),
                                 textposition="bottom center", 
-                                textfont=dict(size=10, color='#ff4444'),
-                                hovertemplate='<b>SELL</b><br>Price: $%{y:.6f}<br>Reason: %{customdata}<extra></extra>',
-                                customdata=sell_trades.get('reason', '')
+                                textfont=dict(size=12, color='#f44336'),
+                                customdata=sell_trades.get('reason', ''),
+                                hovertemplate='<b>SELL ORDER</b><br>' +
+                                             'Time: %{x}<br>' +
+                                             'Price: $%{y:.6f}<br>' +
+                                             'Reason: %{customdata}<extra></extra>'
                             ))
 
                         # Add P&L lines between buy/sell pairs
@@ -550,44 +603,62 @@ with tab1:
                             if trade.get('action') == 'buy':
                                 open_trades.append(trade)
                             elif trade.get('action') == 'sell' and open_trades:
-                                # Match with oldest buy (FIFO)
                                 buy_trade = open_trades.pop(0)
                                 pnl = float(trade.get('price', 0)) - float(buy_trade.get('price', 0))
                                 pnl_pct = (pnl / float(buy_trade.get('price', 1))) * 100
                                 
-                                line_color = "#00ff88" if pnl >= 0 else "#ff4444"
-                                line_width = 3 if abs(pnl_pct) > 5 else 2
+                                line_color = "#4caf50" if pnl >= 0 else "#f44336"
+                                line_width = 4 if abs(pnl_pct) > 10 else 3 if abs(pnl_pct) > 5 else 2
                                 
                                 fig.add_trace(go.Scatter(
                                     x=[buy_trade['timestamp'], trade['timestamp']],
                                     y=[buy_trade['price'], trade['price']],
                                     mode='lines',
                                     line=dict(color=line_color, width=line_width, dash='solid'),
+                                    opacity=0.8,
                                     showlegend=False,
-                                    hovertemplate=f'P&L: ${pnl:.4f} ({pnl_pct:+.2f}%)<extra></extra>',
-                                    name=f'Trade P&L'
+                                    hovertemplate=f'<b>Trade P&L</b><br>' +
+                                                 f'P&L: ${pnl:.6f} ({pnl_pct:+.2f}%)<br>' +
+                                                 f'Hold Time: {trade["timestamp"] - buy_trade["timestamp"]}<extra></extra>',
+                                    name='Trade P&L'
                                 ))
 
-                # Update layout for better visualization
+                # Determine appropriate tick format based on timeframe
+                if range_choice in ["4 hours", "12 hours"]:
+                    tick_format = '%H:%M'
+                    dtick = 'M30'  # Every 30 minutes
+                elif range_choice == "1 day":
+                    tick_format = '%H:%M'
+                    dtick = 'M60'  # Every hour
+                elif range_choice == "3 days":
+                    tick_format = '%m/%d %H:%M'
+                    dtick = 'M360'  # Every 6 hours
+                else:
+                    tick_format = '%m/%d'
+                    dtick = None
+
+                # Update layout for minute-level visualization
                 price_range = vis['high'].max() - vis['low'].min()
-                y_padding = price_range * 0.1
+                y_padding = price_range * 0.05  # Smaller padding for minute data
                 
                 fig.update_layout(
-                    title=f"{selected_asset} — Price & Trade Activity ({range_choice})",
+                    title=f"{selected_asset} — Minute-Level Price & ML Signals ({range_choice})",
                     template="plotly_white",
                     xaxis_rangeslider_visible=False,
                     xaxis=dict(
-                        title="Date/Time",
+                        title="Time",
                         type='date',
-                        tickformat='%m/%d %H:%M' if range_choice in ["1 day", "7 days"] else '%m/%d',
+                        tickformat=tick_format,
+                        dtick=dtick,
                         showgrid=True,
-                        gridcolor='rgba(128,128,128,0.2)'
+                        gridcolor='rgba(128,128,128,0.1)',
+                        tickangle=45 if range_choice in ["4 hours", "12 hours", "1 day"] else 0
                     ),
                     yaxis=dict(
                         title="Price (USD)",
-                        tickformat='.6f' if vis['close'].iloc[-1] < 1 else '.2f',
+                        tickformat='.6f' if vis['close'].iloc[-1] < 1 else '.4f',
                         showgrid=True,
-                        gridcolor='rgba(128,128,128,0.2)',
+                        gridcolor='rgba(128,128,128,0.1)',
                         range=[vis['low'].min() - y_padding, vis['high'].max() + y_padding]
                     ),
                     hovermode="x unified",
@@ -598,18 +669,22 @@ with tab1:
                         xanchor="center",
                         x=0.5
                     ),
-                    height=700,
-                    margin=dict(l=60, r=20, t=80, b=60),
-                    plot_bgcolor='rgba(248,248,248,0.8)'
+                    height=750,
+                    margin=dict(l=60, r=20, t=80, b=80),
+                    plot_bgcolor='rgba(250,250,250,0.8)'
                 )
 
-                st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True})
+                st.plotly_chart(fig, use_container_width=True, config={
+                    'displayModeBar': True,
+                    'modeBarButtonsToAdd': ['drawline', 'drawopenpath', 'drawclosedpath'],
+                    'scrollZoom': True
+                })
                 
-                # Add summary stats for the selected period
+                # Enhanced summary stats
                 if not asset_trades.empty:
-                    col1, col2, col3, col4 = st.columns(4)
+                    col1, col2, col3, col4, col5 = st.columns(5)
                     with col1:
-                        st.metric("Trades in Period", len(asset_trades))
+                        st.metric("Total Trades", len(asset_trades))
                     with col2:
                         buy_count = len(asset_trades[asset_trades['action'] == 'buy'])
                         st.metric("Buy Orders", buy_count)
@@ -619,12 +694,34 @@ with tab1:
                     with col4:
                         if 'pnl' in asset_trades.columns:
                             period_pnl = asset_trades['pnl'].sum()
-                            st.metric("Period P&L", f"${period_pnl:.4f}")
+                            st.metric("Period P&L", f"${period_pnl:.6f}")
+                    with col5:
+                        if len(asset_trades) >= 2:
+                            time_span = asset_trades['timestamp'].max() - asset_trades['timestamp'].min()
+                            st.metric("Trading Span", f"{time_span}")
                         
-            elif len(vis) <= 1:
-                st.warning(f"Insufficient data points ({len(vis)}) for {selected_asset} in the selected date range.")
+                # ML Signal summary
+                if 'p_up' in vis.columns and 'p_down' in vis.columns:
+                    st.markdown("---")
+                    st.markdown("### 🤖 ML Signal Analysis")
+                    prob_data = vis.dropna(subset=['p_up', 'p_down'])
+                    if not prob_data.empty:
+                        col1, col2, col3, col4 = st.columns(4)
+                        with col1:
+                            bullish_signals = len(prob_data[prob_data['p_up'] > prob_data['p_down']])
+                            st.metric("Bullish Signals", f"{bullish_signals} ({bullish_signals/len(prob_data)*100:.1f}%)")
+                        with col2:
+                            bearish_signals = len(prob_data[prob_data['p_down'] > prob_data['p_up']])
+                            st.metric("Bearish Signals", f"{bearish_signals} ({bearish_signals/len(prob_data)*100:.1f}%)")
+                        with col3:
+                            avg_confidence = abs(prob_data['p_up'] - prob_data['p_down']).mean()
+                            st.metric("Avg Confidence", f"{avg_confidence:.3f}")
+                        with col4:
+                            high_conf_signals = len(prob_data[abs(prob_data['p_up'] - prob_data['p_down']) > 0.1])
+                            st.metric("High Confidence", f"{high_conf_signals} (>10%)")
+                        
             else:
-                st.warning(f"No data for {selected_asset} in the selected date range.")
+                st.warning(f"No data for {selected_asset} in the selected date range of {range_choice}.")
         else:
             st.warning(f"No market data found for {selected_asset}.")
     else:
@@ -666,3 +763,4 @@ with tab3:
         st.dataframe(display_df, use_container_width=True)
     else:
         st.warning("No trade history to display.")
+
