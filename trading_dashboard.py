@@ -256,25 +256,73 @@ with st.expander("🔎 Debug — data status"):
         "assets_sample": sorted(market_df["asset"].dropna().unique())[:10] if not market_df.empty and "asset" in market_df.columns else [],
     })
 
+# =========================
+# FIXED SIDEBAR SECTION
+# =========================
 with st.sidebar:
     st.markdown("<h1 style='text-align: center;'>Crypto Strategy</h1>", unsafe_allow_html=True)
     
-    # --- FIX: Add a refresh button to clear the cache ---
+    # --- REFRESH BUTTON ---
     if st.button("🔄 Refresh Live Data"):
         st.cache_data.clear()
         st.rerun()
 
+    # --- IMPROVED DATE DISPLAY: Show market data when trade data is old ---
+    date_source = "No Data"
+    min_date = max_date = None
+    
+    # Check trade data first
     if not trades_df.empty and 'timestamp' in trades_df.columns:
-        min_date, max_date = trades_df['timestamp'].min(), trades_df['timestamp'].max()
-        if pd.notna(min_date) and pd.notna(max_date):
-            st.markdown(f"<p style='text-align: center;'><strong>{min_date.strftime('%m/%d/%y')} - {max_date.strftime('%m/%d/%y')}</strong></p>", unsafe_allow_html=True)
+        trade_min = trades_df['timestamp'].min()
+        trade_max = trades_df['timestamp'].max()
+        if pd.notna(trade_min) and pd.notna(trade_max):
+            # Only use trade dates if they span more than 1 day AND are recent
+            days_span = (trade_max - trade_min).days
+            days_old = (datetime.now(timezone(LOCAL_TZ)).replace(tzinfo=None) - trade_max).days
+            
+            if days_span > 0 and days_old <= 3:  # Recent trade data
+                min_date, max_date = trade_min, trade_max
+                date_source = "Trade Data"
+    
+    # Fall back to market data if trade data is limited/old
+    if min_date is None and not market_df.empty and 'timestamp' in market_df.columns:
+        market_min = market_df['timestamp'].min()
+        market_max = market_df['timestamp'].max()
+        if pd.notna(market_min) and pd.notna(market_max):
+            min_date, max_date = market_min, market_max
+            date_source = "Market Data"
+    
+    # Display the date range
+    if min_date and max_date:
+        st.markdown(f"<p style='text-align: center;'><strong>{min_date.strftime('%m/%d/%y')} - {max_date.strftime('%m/%d/%y')}</strong></p>", unsafe_allow_html=True)
+        st.markdown(f"<p style='text-align: center; font-size: 0.8em; color: grey;'>Source: {date_source}</p>", unsafe_allow_html=True)
+    else:
+        st.markdown("<p style='text-align: center; color: orange;'>⚠️ No Date Range Available</p>", unsafe_allow_html=True)
 
+    # Last updated timestamp
     now_local = datetime.now(timezone(LOCAL_TZ))
     st.markdown(f"<p style='text-align: center; font-size: 0.9em; color: grey;'>Last updated: {now_local.strftime('%Y-%m-%d %H:%M')}</p>", unsafe_allow_html=True)
     st.markdown("---")
 
+    # Data status indicators
+    col1, col2 = st.columns(2)
+    with col1:
+        trade_status = "✅" if not trades_df.empty else "⚠️"
+        trade_count = len(trades_df) if not trades_df.empty else 0
+        st.markdown(f"{trade_status} **Trades:** {trade_count}")
+    with col2:
+        market_status = "✅" if not market_df.empty else "❌"
+        market_count = len(market_df) if not market_df.empty else 0
+        st.markdown(f"{market_status} **Market:** {market_count:,}")
+    
+    # Show asset count
+    if not market_df.empty and "asset" in market_df.columns:
+        asset_count = market_df["asset"].nunique()
+        st.markdown(f"📊 **Assets:** {asset_count}")
+    
+    st.markdown("---")
+
     st.markdown("## 📊 Strategy Stats")
-    # ... (rest of the sidebar is the same)
     if summary_stats:
         col1, col2 = st.columns(2)
         with col1:
@@ -330,8 +378,9 @@ with st.sidebar:
                     price_str = "N/A"
                 st.markdown(f"""<div style="display: flex; justify-content: space-between; align-items: center;"><p style="color:grey; margin: 0;">{asset}</p><p style="color:grey; font-weight:bold; margin: 0;">{price_str}</p></div>""", unsafe_allow_html=True)
 
-# ... (rest of the script is the same)
+# =========================
 # Main content tabs
+# =========================
 tab1, tab2, tab3 = st.tabs(["📈 Price & Trades", "💰 P&L Analysis", "📜 Trade History"])
 
 with tab1:
@@ -468,5 +517,3 @@ with tab3:
         st.dataframe(display_df, use_container_width=True)
     else:
         st.warning("No trade history to display.")
-
-
