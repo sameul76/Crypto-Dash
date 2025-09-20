@@ -36,12 +36,26 @@ def lower_strip_cols(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 def to_local_naive(series: pd.Series) -> pd.Series:
+    """
+    Fixed timezone handling - doesn't force UTC when timestamps are already local
+    """
     s = series.copy()
+    
+    # Convert to datetime without forcing timezone assumptions
     if pd.api.types.is_numeric_dtype(s):
+        # Only if truly numeric (unix timestamps), assume UTC
         s = pd.to_datetime(s, unit="s", errors="coerce", utc=True)
+        s = s.dt.tz_convert(LOCAL_TZ).dt.tz_localize(None)
     else:
-        s = pd.to_datetime(s, errors="coerce", utc=True)
-    return s.dt.tz_convert(LOCAL_TZ).dt.tz_localize(None)
+        # If already datetime or string, don't assume timezone
+        s = pd.to_datetime(s, errors="coerce")
+        
+        # Only convert timezone if source has timezone info
+        if s.dt.tz is not None:
+            s = s.dt.tz_convert(LOCAL_TZ).dt.tz_localize(None)
+        # If timezone-naive, assume already in correct local time (don't convert)
+    
+    return s
 
 def unify_symbol(val: str) -> str:
     if not isinstance(val, str):
