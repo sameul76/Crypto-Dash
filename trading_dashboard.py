@@ -22,10 +22,11 @@ DEFAULT_ASSET = "GIGA-USD"
 # =========================
 # Google Drive Links
 # =========================
-# Trade log file (trade_history_master.parquet)
-TRADES_LINK = "1t60dS-c9R28evHCC-6AJ7sZZKQqPJA81"
-# --- FIX: Use the correct, single link for your live market data ---
-MARKET_LINK = "1GuBMXpthN7pmaIpUbxmZL-tWM902gOyk"
+# Change this line:
+MARKET_LINK = "https://drive.google.com/file/d/1GuBMXpthN7pmaIpUbxmZL-tWM902gOyk/view?usp=sharing"
+
+# To this:
+MARKET_LINK = "https://drive.google.com/file/d/1h9CIU4ro6JPpoBXYeH_oZD7x7af-teB1/view?usp=sharing"
 
 # =========================
 # Helpers — data processing
@@ -468,3 +469,4 @@ with tab3:
         st.dataframe(display_df, use_container_width=True)
     else:
         st.warning("No trade history to display.")
+
