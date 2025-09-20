@@ -5,6 +5,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+import time
 from datetime import datetime, timedelta
 from pytz import timezone
 
@@ -16,6 +17,18 @@ import pyarrow  # noqa: F401 (ensures pyarrow engine is available)
 # App Configuration
 # =========================
 st.set_page_config(page_title="Crypto Trading Strategy", layout="wide")
+
+# =========================
+# Auto-Refresh Setup
+# =========================
+REFRESH_INTERVAL = 300  # 5 minutes in seconds
+
+# Initialize session state for auto-refresh
+if 'last_refresh' not in st.session_state:
+    st.session_state.last_refresh = time.time()
+if 'auto_refresh_enabled' not in st.session_state:
+    st.session_state.auto_refresh_enabled = True
+
 LOCAL_TZ = "America/Los_Angeles"
 DEFAULT_ASSET = "GIGA-USD"
 
@@ -254,6 +267,23 @@ def load_data(trades_link: str, market_link: str):
     return trades_with_pnl, pnl_summary, stats, market
 
 # =========================
+# Auto-Refresh Logic
+# =========================
+def check_auto_refresh():
+    current_time = time.time()
+    time_since_refresh = current_time - st.session_state.last_refresh
+    
+    if st.session_state.auto_refresh_enabled and time_since_refresh >= REFRESH_INTERVAL:
+        st.session_state.last_refresh = current_time
+        st.cache_data.clear()
+        st.rerun()
+    
+    return time_since_refresh
+
+# Check auto-refresh at the start
+time_since_refresh = check_auto_refresh()
+
+# =========================
 # Main App
 # =========================
 st.markdown("## Crypto Trading Strategy")
@@ -271,15 +301,35 @@ with st.expander("🔎 Debug — data status"):
     })
 
 # =========================
-# FIXED SIDEBAR SECTION
+# SIDEBAR WITH AUTO-REFRESH
 # =========================
 with st.sidebar:
     st.markdown("<h1 style='text-align: center;'>Crypto Strategy</h1>", unsafe_allow_html=True)
     
-    # --- REFRESH BUTTON ---
-    if st.button("🔄 Refresh Live Data"):
-        st.cache_data.clear()
-        st.rerun()
+    # --- AUTO-REFRESH CONTROLS ---
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        auto_refresh = st.toggle("🔄 Auto-Refresh (5min)", value=st.session_state.auto_refresh_enabled)
+        st.session_state.auto_refresh_enabled = auto_refresh
+    with col2:
+        if st.button("🔄"):
+            st.cache_data.clear()
+            st.session_state.last_refresh = time.time()
+            st.rerun()
+    
+    # Show countdown if auto-refresh is enabled
+    if st.session_state.auto_refresh_enabled:
+        time_until_refresh = REFRESH_INTERVAL - time_since_refresh
+        if time_until_refresh > 0:
+            minutes = int(time_until_refresh // 60)
+            seconds = int(time_until_refresh % 60)
+            st.markdown(f"<p style='text-align: center; font-size: 0.8em; color: #4CAF50;'>⏱️ Next refresh: {minutes:02d}:{seconds:02d}</p>", unsafe_allow_html=True)
+        else:
+            st.markdown(f"<p style='text-align: center; font-size: 0.8em; color: #4CAF50;'>🔄 Refreshing...</p>", unsafe_allow_html=True)
+    else:
+        st.markdown(f"<p style='text-align: center; font-size: 0.8em; color: #888;'>Auto-refresh disabled</p>", unsafe_allow_html=True)
+    
+    st.markdown("---")
 
     # --- IMPROVED DATE DISPLAY: Show market data when trade data is old ---
     date_source = "No Data"
@@ -531,3 +581,10 @@ with tab3:
         st.dataframe(display_df, use_container_width=True)
     else:
         st.warning("No trade history to display.")
+
+# =========================
+# Trigger auto-refresh check at the end 
+# =========================
+if st.session_state.auto_refresh_enabled:
+    time.sleep(5)  # Wait 5 seconds before checking again
+    st.rerun()
