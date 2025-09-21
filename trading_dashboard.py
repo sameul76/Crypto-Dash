@@ -35,9 +35,9 @@ DEFAULT_ASSET = "GIGA-USD"
 # =========================
 # Google Drive Links
 # =========================
-# Trade log file (trade_history_master.parquet)
+# Trade log file (trade_history_master.parquet) - UPDATED
 TRADES_LINK = "https://drive.google.com/file/d/1hyM37eafLgvMo8RJDtw9GSEdZ-LQ05ks/view?usp=sharing"
-# Features/market data file (trading_data_complete.parquet) - UPDATED
+# Features/market data file (trading_data_complete.parquet)
 MARKET_LINK = "https://drive.google.com/file/d/1h9CIU4ro6JPpoBXYeH_oZD7x7af-teB1/view?usp=sharing"
 
 # =========================
@@ -588,4 +588,3 @@ with tab3:
 if st.session_state.auto_refresh_enabled:
     time.sleep(5)  # Wait 5 seconds before checking again
     st.rerun()
-
