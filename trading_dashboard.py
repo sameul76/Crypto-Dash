@@ -163,21 +163,28 @@ def calculate_open_positions(trades_df: pd.DataFrame, market_df: pd.DataFrame) -
         return pd.DataFrame()
     positions = {}
     for _, row in trades_df.sort_values("timestamp").iterrows():
-        asset = row["asset"]
-        action = row["action"]
-        qty = float(row.get("quantity", 0.0))
-        price = float(row.get("price", 0.0))
+        asset = row.get("asset", "")
+        action = str(row.get("action", "")).lower().strip()  # Convert to string and normalize
+        try:
+            qty = float(row.get("quantity", 0.0))
+            price = float(row.get("price", 0.0))
+        except (ValueError, TypeError):
+            qty, price = 0.0, 0.0
+            
         if asset not in positions:
             positions[asset] = {"quantity": 0.0, "cost": 0.0}
-        if action == "buy":
+            
+        # Handle different action formats from your bot
+        if action in ["buy", "open"]:  # Your bot uses both formats
             positions[asset]["cost"] += qty * price
             positions[asset]["quantity"] += qty
-        elif action == "sell":
+        elif action in ["sell", "close"]:
             if positions[asset]["quantity"] > 0:
                 avg_cost = positions[asset]["cost"] / max(positions[asset]["quantity"], 1e-12)
                 sell_qty = min(qty, positions[asset]["quantity"])
                 positions[asset]["cost"] -= avg_cost * sell_qty
                 positions[asset]["quantity"] -= sell_qty
+                
     open_positions = []
     for asset, data in positions.items():
         if data["quantity"] > 1e-9:
