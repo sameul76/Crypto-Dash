@@ -292,10 +292,10 @@ def load_data(trades_link: str, market_link: str):
         
         # Fix timestamp parsing for your ISO format
         if 'timestamp' in trades.columns: 
-            trades['timestamp'] = pd.to_datetime(trades['timestamp'], errors='coerce')
-            # Convert to local timezone if needed (your timestamps might already be local)
-            if trades['timestamp'].dt.tz is not None:
-                trades['timestamp'] = trades['timestamp'].dt.tz_convert(LOCAL_TZ).dt.tz_localize(None)
+            # Parse as-is, remove any timezone pandas might have added, but don't convert
+                trades['timestamp'] = pd.to_datetime(trades['timestamp'], errors='coerce')
+                if trades['timestamp'].dt.tz is not None:
+                trades['timestamp'] = trades['timestamp'].dt.tz_localize(None)  # Remove TZ, don't convert
         
         # Convert numeric columns
         for col in ["quantity", "price", "usd_value", "p_up", "p_down", "pnl", "pnl_pct"]:
@@ -696,3 +696,4 @@ with tab3:
 if st.session_state.auto_refresh_enabled:
     time.sleep(5)  # Wait 5 seconds before checking again
     st.rerun()
+
