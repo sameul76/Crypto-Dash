@@ -103,22 +103,28 @@ def calculate_pnl_and_metrics(trades_df: pd.DataFrame):
     df = df.sort_values("timestamp").reset_index(drop=True)
     df["pnl"], df["cumulative_pnl"] = 0.0, 0.0
     total, win, loss, gp, gl, peak, mdd = 0.0, 0, 0, 0.0, 0.0, 0.0, 0.0
+    
     for i, row in df.iterrows():
-        asset = row.get("asset")
-        action = row.get("action")
+        asset = row.get("asset", "")
+        action = str(row.get("action", "")).lower().strip()  # Convert to string and normalize
+        
         try:
             price = float(row.get("price", 0))
             qty = float(row.get("quantity", 0))
-        except Exception:
+        except (ValueError, TypeError):
             price, qty = 0.0, 0.0
+            
         if asset not in positions:
             positions[asset] = {"quantity": 0.0, "cost": 0.0}
             pnl_per_asset[asset] = 0.0
+            
         cur_pnl = 0.0
-        if action == "buy":
+        
+        # Handle different action formats from your bot
+        if action in ["buy", "open"]:  # Your bot uses "buy" in side column
             positions[asset]["cost"] += qty * price
             positions[asset]["quantity"] += qty
-        elif action == "sell":
+        elif action in ["sell", "close"]:
             if positions[asset]["quantity"] > 0:
                 avg_cost = positions[asset]["cost"] / max(positions[asset]["quantity"], 1e-12)
                 trade_qty = min(qty, positions[asset]["quantity"])
@@ -134,10 +140,12 @@ def calculate_pnl_and_metrics(trades_df: pd.DataFrame):
                     gl += abs(realized_pnl)
                 positions[asset]["cost"] -= avg_cost * trade_qty
                 positions[asset]["quantity"] -= trade_qty
+                
         df.loc[i, "pnl"] = cur_pnl
         df.loc[i, "cumulative_pnl"] = total
         peak = max(peak, total)
         mdd = max(mdd, peak - total)
+        
     closed_trades = win + loss
     stats = {
         "win_rate": (win / closed_trades * 100) if closed_trades else 0,
@@ -244,17 +252,33 @@ def load_data(trades_link: str, market_link: str):
     trades = _read_parquet_bytes(raw_trades, "Trades")
     raw_market = download_drive_file_bytes(market_link)
     market = _read_parquet_bytes(raw_market, "Market")
+    
     if not trades.empty:
         trades = lower_strip_cols(trades)
+        
+        # Handle your specific trade file structure
         column_mapping = {}
-        if "product_id" in trades.columns: column_mapping["product_id"] = "asset"
-        if "side" in trades.columns: column_mapping["side"] = "action"
-        if "size" in trades.columns: column_mapping["size"] = "quantity"
+        if "value" in trades.columns: column_mapping["value"] = "usd_value"
+        if "side" in trades.columns: column_mapping["side"] = "action"  # Use 'side' (buy/sell) as action
+        # Keep asset as-is since your file already has 'asset' column
+        
         trades = trades.rename(columns=column_mapping)
-        if "asset" in trades.columns: trades["asset"] = trades["asset"].apply(unify_symbol)
-        if 'timestamp' in trades.columns: trades['timestamp'] = to_local_naive(trades['timestamp'])
-        for col in ["quantity", "price", "usd_value", "p_up", "p_down"]:
-            if col in trades.columns: trades[col] = pd.to_numeric(trades[col], errors="coerce")
+        
+        if "asset" in trades.columns: 
+            trades["asset"] = trades["asset"].apply(unify_symbol)
+        
+        # Fix timestamp parsing for your ISO format
+        if 'timestamp' in trades.columns: 
+            trades['timestamp'] = pd.to_datetime(trades['timestamp'], errors='coerce')
+            # Convert to local timezone if needed (your timestamps might already be local)
+            if trades['timestamp'].dt.tz is not None:
+                trades['timestamp'] = trades['timestamp'].dt.tz_convert(LOCAL_TZ).dt.tz_localize(None)
+        
+        # Convert numeric columns
+        for col in ["quantity", "price", "usd_value", "p_up", "p_down", "pnl", "pnl_pct"]:
+            if col in trades.columns: 
+                trades[col] = pd.to_numeric(trades[col], errors="coerce")
+    
     if not market.empty:
         market = lower_strip_cols(market)
         market = market.rename(columns={"product_id": "asset"})
@@ -263,6 +287,7 @@ def load_data(trades_link: str, market_link: str):
         market = normalize_prob_columns(market)
         for col in ["open", "high", "low", "close", "p_up", "p_down"]:
             if col in market.columns: market[col] = pd.to_numeric(market[col], errors="coerce")
+    
     pnl_summary, trades_with_pnl, stats = calculate_pnl_and_metrics(trades) if not trades.empty else ({}, pd.DataFrame(), {})
     return trades_with_pnl, pnl_summary, stats, market
 
@@ -572,13 +597,33 @@ with tab2:
 with tab3:
     if not trades_df.empty:
         st.markdown("### Complete Trade Log")
-        cols = [c for c in ["timestamp","asset","action","quantity","price","usd_value","reason","p_up","p_down"] if c in trades_df.columns]
+        # Updated columns for your trade file structure
+        cols = [c for c in ["timestamp","asset","action","quantity","price","usd_value","reason","p_up","p_down","pnl","pnl_pct","confidence","take_profit","stop_loss","trading_mode"] if c in trades_df.columns]
         display_df = trades_df[cols].copy()
         if "timestamp" in display_df.columns:
             display_df["timestamp"] = pd.to_datetime(display_df["timestamp"], errors="coerce")
             display_df["Time"] = display_df["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S")
             display_df.drop(columns=["timestamp"], inplace=True)
-        display_df.rename(columns={"asset":"Asset","action":"Action","quantity":"Quantity","price":"Price", "usd_value":"USD Value","reason":"Reason","p_up":"P(Up)","p_down":"P(Down)"}, inplace=True)
+        
+        # Updated column renaming for your structure
+        rename_dict = {
+            "asset":"Asset",
+            "action":"Action", 
+            "quantity":"Quantity",
+            "price":"Price", 
+            "usd_value":"USD Value",
+            "reason":"Reason",
+            "p_up":"P(Up)",
+            "p_down":"P(Down)",
+            "pnl":"P&L ($)",
+            "pnl_pct":"P&L %",
+            "confidence":"Confidence",
+            "take_profit":"Take Profit",
+            "stop_loss":"Stop Loss",
+            "trading_mode":"Mode"
+        }
+        display_df.rename(columns=rename_dict, inplace=True)
+        
         if "Time" in display_df.columns:
             display_df = display_df.sort_values("Time", ascending=False)
         st.dataframe(display_df, use_container_width=True)
