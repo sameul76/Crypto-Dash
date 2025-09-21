@@ -35,7 +35,7 @@ DEFAULT_ASSET = "GIGA-USD"
 # =========================
 # Google Drive Links
 # =========================
-# Trade log file (trade_history_master.parquet) - UPDATED
+# Trade log file (trades_log.parquet) - UPDATED
 TRADES_LINK = "https://drive.google.com/file/d/1hyM37eafLgvMo8RJDtw9GSEdZ-LQ05ks/view?usp=sharing"
 # Features/market data file (trading_data_complete.parquet)
 MARKET_LINK = "https://drive.google.com/file/d/1h9CIU4ro6JPpoBXYeH_oZD7x7af-teB1/view?usp=sharing"
@@ -106,7 +106,8 @@ def calculate_pnl_and_metrics(trades_df: pd.DataFrame):
     
     for i, row in df.iterrows():
         asset = row.get("asset", "")
-        action = str(row.get("action", "")).lower().strip()  # Convert to string and normalize
+        # Use unified_action column
+        action = str(row.get("unified_action", "")).lower().strip()
         
         try:
             price = float(row.get("price", 0))
@@ -164,7 +165,8 @@ def calculate_open_positions(trades_df: pd.DataFrame, market_df: pd.DataFrame) -
     positions = {}
     for _, row in trades_df.sort_values("timestamp").iterrows():
         asset = row.get("asset", "")
-        action = str(row.get("action", "")).lower().strip()  # Convert to string and normalize
+        # Use unified_action column
+        action = str(row.get("unified_action", "")).lower().strip()
         try:
             qty = float(row.get("quantity", 0.0))
             price = float(row.get("price", 0.0))
@@ -266,10 +268,24 @@ def load_data(trades_link: str, market_link: str):
         # Handle your specific trade file structure
         column_mapping = {}
         if "value" in trades.columns: column_mapping["value"] = "usd_value"
-        if "side" in trades.columns: column_mapping["side"] = "action"  # Use 'side' (buy/sell) as action
-        # Keep asset as-is since your file already has 'asset' column
+        
+        # Since your file has both 'action' and 'side', use 'side' for trading direction
+        # and keep 'action' for position type (OPEN/CLOSE)
+        if "side" in trades.columns and "action" in trades.columns:
+            # Rename side to trade_direction to avoid conflict
+            column_mapping["side"] = "trade_direction" 
+        elif "side" in trades.columns and "action" not in trades.columns:
+            column_mapping["side"] = "action"
         
         trades = trades.rename(columns=column_mapping)
+        
+        # Create a unified action column for buy/sell logic
+        if "trade_direction" in trades.columns:
+            trades["unified_action"] = trades["trade_direction"]
+        elif "action" in trades.columns:
+            trades["unified_action"] = trades["action"]
+        else:
+            trades["unified_action"] = "unknown"
         
         if "asset" in trades.columns: 
             trades["asset"] = trades["asset"].apply(unify_symbol)
@@ -536,17 +552,20 @@ with tab1:
                 if not trades_df.empty:
                     asset_trades = trades_df[(trades_df["asset"] == selected_asset) & (trades_df["timestamp"] >= start_date) & (trades_df["timestamp"] <= end_date)].copy()
                     if not asset_trades.empty:
-                        buy_trades = asset_trades[asset_trades["action"] == "buy"]
+                        # Use unified_action for consistent buy/sell detection
+                        buy_trades = asset_trades[asset_trades["unified_action"].str.lower().isin(["buy", "open"])]
                         if not buy_trades.empty:
                             fig.add_trace(go.Scatter(x=buy_trades["timestamp"], y=buy_trades["price"], mode="markers+text", name="BUY", marker=dict(symbol='triangle-up', size=16, color='#4caf50', line=dict(width=2, color='white')), text=['▲'] * len(buy_trades), textposition="top center", textfont=dict(size=12, color='#4caf50'), customdata=buy_trades.get('reason', ''), hovertemplate='<b>BUY ORDER</b><br>Time: %{x}<br>Price: $%{y:.6f}<br>Reason: %{customdata}<extra></extra>'))
-                        sell_trades = asset_trades[asset_trades["action"] == "sell"]
+                        sell_trades = asset_trades[asset_trades["unified_action"].str.lower().isin(["sell", "close"])]
                         if not sell_trades.empty:
                             fig.add_trace(go.Scatter(x=sell_trades["timestamp"], y=sell_trades["price"], mode="markers+text", name="SELL", marker=dict(symbol='triangle-down', size=16, color='#f44336', line=dict(width=2, color='white')), text=['▼'] * len(sell_trades), textposition="bottom center", textfont=dict(size=12, color='#f44336'), customdata=sell_trades.get('reason', ''), hovertemplate='<b>SELL ORDER</b><br>Time: %{x}<br>Price: $%{y:.6f}<br>Reason: %{customdata}<extra></extra>'))
                         sorted_trades = asset_trades.sort_values("timestamp")
                         open_trades = []
                         for _, trade in sorted_trades.iterrows():
-                            if trade.get('action') == 'buy': open_trades.append(trade)
-                            elif trade.get('action') == 'sell' and open_trades:
+                            trade_action = str(trade.get('unified_action', '')).lower()
+                            if trade_action in ['buy', 'open']: 
+                                open_trades.append(trade)
+                            elif trade_action in ['sell', 'close'] and open_trades:
                                 buy_trade = open_trades.pop(0)
                                 pnl = float(trade.get('price', 0)) - float(buy_trade.get('price', 0))
                                 pnl_pct = (pnl / float(buy_trade.get('price', 1))) * 100
@@ -567,12 +586,20 @@ with tab1:
                 if not asset_trades.empty:
                     col1, col2, col3, col4, col5 = st.columns(5)
                     with col1: st.metric("Total Trades", len(asset_trades))
-                    with col2: buy_count = len(asset_trades[asset_trades['action'] == 'buy']); st.metric("Buy Orders", buy_count)
-                    with col3: sell_count = len(asset_trades[asset_trades['action'] == 'sell']); st.metric("Sell Orders", sell_count)
+                    with col2: 
+                        buy_count = len(asset_trades[asset_trades["unified_action"].str.lower().isin(["buy", "open"])])
+                        st.metric("Buy Orders", buy_count)
+                    with col3: 
+                        sell_count = len(asset_trades[asset_trades["unified_action"].str.lower().isin(["sell", "close"])])
+                        st.metric("Sell Orders", sell_count)
                     with col4:
-                        if 'pnl' in asset_trades.columns: period_pnl = asset_trades['pnl'].sum(); st.metric("Period P&L", f"${period_pnl:.6f}")
+                        if 'pnl' in asset_trades.columns: 
+                            period_pnl = asset_trades['pnl'].sum()
+                            st.metric("Period P&L", f"${period_pnl:.6f}")
                     with col5:
-                        if len(asset_trades) >= 2: time_span = asset_trades['timestamp'].max() - asset_trades['timestamp'].min(); st.metric("Trading Span", f"{time_span}")
+                        if len(asset_trades) >= 2: 
+                            time_span = asset_trades['timestamp'].max() - asset_trades['timestamp'].min()
+                            st.metric("Trading Span", f"{time_span}")
                 if 'p_up' in vis.columns and 'p_down' in vis.columns:
                     st.markdown("---")
                     st.markdown("### 🤖 ML Signal Analysis")
@@ -604,35 +631,61 @@ with tab2:
 with tab3:
     if not trades_df.empty:
         st.markdown("### Complete Trade Log")
-        # Updated columns for your trade file structure
-        cols = [c for c in ["timestamp","asset","action","quantity","price","usd_value","reason","p_up","p_down","pnl","pnl_pct","confidence","take_profit","stop_loss","trading_mode"] if c in trades_df.columns]
-        display_df = trades_df[cols].copy()
+        
+        # Get available columns from your trade file, avoiding duplicates
+        available_cols = []
+        priority_cols = ["timestamp", "asset", "unified_action", "action", "trade_direction", "quantity", "price", "usd_value", "reason", "p_up", "p_down", "pnl", "pnl_pct", "confidence", "take_profit", "stop_loss", "trading_mode"]
+        
+        # Add columns in priority order, avoiding duplicates
+        for col in priority_cols:
+            if col in trades_df.columns and col not in available_cols:
+                available_cols.append(col)
+        
+        # Add any remaining columns
+        for col in trades_df.columns:
+            if col not in available_cols:
+                available_cols.append(col)
+        
+        display_df = trades_df[available_cols].copy()
+        
+        # Handle timestamp
         if "timestamp" in display_df.columns:
             display_df["timestamp"] = pd.to_datetime(display_df["timestamp"], errors="coerce")
             display_df["Time"] = display_df["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S")
             display_df.drop(columns=["timestamp"], inplace=True)
         
-        # Updated column renaming for your structure
-        rename_dict = {
-            "asset":"Asset",
-            "action":"Action", 
-            "quantity":"Quantity",
-            "price":"Price", 
-            "usd_value":"USD Value",
-            "reason":"Reason",
-            "p_up":"P(Up)",
-            "p_down":"P(Down)",
-            "pnl":"P&L ($)",
-            "pnl_pct":"P&L %",
-            "confidence":"Confidence",
-            "take_profit":"Take Profit",
-            "stop_loss":"Stop Loss",
-            "trading_mode":"Mode"
+        # Create a safe rename dictionary that only renames existing columns
+        rename_dict = {}
+        column_renames = {
+            "asset": "Asset",
+            "unified_action": "Direction", 
+            "action": "Action",
+            "trade_direction": "Side",
+            "quantity": "Quantity",
+            "price": "Price", 
+            "usd_value": "USD Value",
+            "reason": "Reason",
+            "p_up": "P(Up)",
+            "p_down": "P(Down)",
+            "pnl": "P&L ($)",
+            "pnl_pct": "P&L %",
+            "confidence": "Confidence",
+            "take_profit": "Take Profit",
+            "stop_loss": "Stop Loss",
+            "trading_mode": "Mode"
         }
-        display_df.rename(columns=rename_dict, inplace=True)
+        
+        # Only add to rename_dict if column exists and target name doesn't already exist
+        for old_name, new_name in column_renames.items():
+            if old_name in display_df.columns and new_name not in display_df.columns:
+                rename_dict[old_name] = new_name
+        
+        if rename_dict:
+            display_df.rename(columns=rename_dict, inplace=True)
         
         if "Time" in display_df.columns:
             display_df = display_df.sort_values("Time", ascending=False)
+            
         st.dataframe(display_df, use_container_width=True)
     else:
         st.warning("No trade history to display.")
