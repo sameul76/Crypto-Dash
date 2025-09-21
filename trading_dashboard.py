@@ -529,6 +529,9 @@ with tab1:
                 y_padding = price_range * 0.05
                 fig.update_layout(title=f"{selected_asset} — Minute-Level Price & ML Signals ({range_choice})", template="plotly_white", xaxis_rangeslider_visible=False, xaxis=dict(title="Time", type='date', tickformat=tick_format, dtick=dtick, showgrid=True, gridcolor='rgba(128,128,128,0.1)', tickangle=45 if range_choice in ["4 hours", "12 hours", "1 day"] else 0), yaxis=dict(title="Price (USD)", tickformat='.6f' if vis['close'].iloc[-1] < 1 else '.4f', showgrid=True, gridcolor='rgba(128,128,128,0.1)', range=[vis['low'].min() - y_padding, vis['high'].max() + y_padding]), hovermode="x unified", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), height=750, margin=dict(l=60, r=20, t=80, b=80), plot_bgcolor='rgba(250,250,250,0.8)')
                 st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True, 'modeBarButtonsToAdd': ['drawline', 'drawopenpath', 'drawclosedpath'], 'scrollZoom': True})
+                
+                # Show trade statistics if trades exist for this asset
+                asset_trades = trades_df[(trades_df["asset"] == selected_asset) & (trades_df["timestamp"] >= start_date) & (trades_df["timestamp"] <= end_date)].copy() if not trades_df.empty else pd.DataFrame()
                 if not asset_trades.empty:
                     col1, col2, col3, col4, col5 = st.columns(5)
                     with col1: st.metric("Total Trades", len(asset_trades))
