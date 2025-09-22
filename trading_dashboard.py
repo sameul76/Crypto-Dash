@@ -562,8 +562,7 @@ with tab1:
                 st.info(f"Showing {len(vis):,} candles from {start_date_local.strftime('%Y-%m-%d %H:%M')} to {end_date_local.strftime('%Y-%m-%d %H:%M')}")
                 
                 fig = go.Figure()
-                
-                # Candlestick trace (without hover info)
+
                 fig.add_trace(go.Candlestick(
                     x=vis["timestamp"], 
                     open=vis["open"], 
@@ -576,15 +575,11 @@ with tab1:
                     increasing_fillcolor='rgba(38, 166, 154, 0.5)', 
                     decreasing_fillcolor='rgba(239, 83, 80, 0.5)', 
                     line=dict(width=1),
-                    hoverinfo='none' # Disable the default hover
+                    hoverinfo='none' 
                 ))
-
-                # ======================================================================
-                # FINAL FIX: Create an invisible scatter trace for the hover tooltip
-                # This trace will provide the main OHLC tooltip for unified hover.
-                # ======================================================================
+                
                 price_format = ".6f" if vis['close'].iloc[-1] < 1 else ".4f"
-                hovertemplate = (
+                hover_template = (
                     '<b>Time: %{x|%Y-%m-%d %H:%M} ('+ LOCAL_TZ +')</b><br><br>' +
                     'Open: %{customdata[0]:' + price_format + '}<br>' +
                     'High: %{customdata[1]:' + price_format + '}<br>' +
@@ -594,15 +589,14 @@ with tab1:
 
                 fig.add_trace(go.Scatter(
                     x=vis['timestamp'],
-                    y=vis['high'], # Position hover at the top of the candle
+                    y=vis['high'],
                     mode='markers',
-                    marker=dict(color='rgba(0,0,0,0)', size=0), # Invisible markers
+                    marker=dict(color='rgba(0,0,0,0)', size=0),
                     customdata=vis[['open', 'high', 'low', 'close']],
-                    hovertemplate=hovertemplate,
+                    hovertemplate=hover_template,
                     name='OHLC',
                     showlegend=False
                 ))
-                # ======================================================================
 
                 if 'p_up' in vis.columns and 'p_down' in vis.columns:
                     prob_data = vis.dropna(subset=['p_up', 'p_down'])
@@ -705,7 +699,10 @@ with tab3:
         
         if "timestamp" in display_df.columns:
             display_df["timestamp"] = pd.to_datetime(display_df["timestamp"], errors="coerce")
-            display_df["Time"] = display_df["timestamp"].dt.tz_convert(LOCAL_TZ).strftime("%Y-%m-%d %H:%M:%S")
+            # ======================================================================
+            # FINAL FIX: Add .dt accessor before strftime
+            # ======================================================================
+            display_df["Time"] = display_df["timestamp"].dt.tz_convert(LOCAL_TZ).dt.strftime("%Y-%m-%d %H:%M:%S")
             st.write("Debug - Time column sample:", display_df["Time"].iloc[0] if len(display_df) > 0 else "No data")
         else:
             st.warning("No timestamp column found in trades data")
@@ -762,4 +759,3 @@ with tab3:
 if st.session_state.auto_refresh_enabled:
     time.sleep(5)
     st.rerun()
-
