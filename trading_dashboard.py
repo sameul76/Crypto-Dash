@@ -348,11 +348,27 @@ def load_data(trades_link: str, market_link: str):
     return trades_with_pnl, pnl_summary, stats, market
 
 # =========================
-# Main App & Sidebar
+# Auto-Refresh Logic
 # =========================
-check_auto_refresh()
+def check_auto_refresh():
+    current_time = time.time()
+    time_since_refresh = current_time - st.session_state.get('last_refresh', 0)
+    
+    if st.session_state.get('auto_refresh_enabled', False) and time_since_refresh >= REFRESH_INTERVAL:
+        st.session_state.last_refresh = current_time
+        st.cache_data.clear()
+        st.rerun()
+    
+    return time_since_refresh
+
+time_since_refresh = check_auto_refresh()
+
+# =========================
+# Main App
+# =========================
 st.markdown("## Crypto Trading Strategy")
 st.caption("ML Signals with Price-Based Exit Logic")
+
 trades_df, pnl_summary, summary_stats, market_df = load_data(TRADES_LINK, MARKET_LINK)
 
 with st.expander("🔎 Debug — data status"):
@@ -364,12 +380,15 @@ with st.expander("🔎 Debug — data status"):
         "assets_sample": sorted(market_df["asset"].dropna().unique())[:10] if not market_df.empty and "asset" in market_df.columns else [],
     })
 
+# =========================
+# SIDEBAR
+# =========================
 with st.sidebar:
     st.markdown("<h1 style='text-align: center;'>Crypto Strategy</h1>", unsafe_allow_html=True)
     
     col1, col2 = st.columns([2, 2])
     with col1:
-        auto_refresh = st.toggle("🔄 Auto-Refresh (5min)", value=st.session_state.auto_refresh_enabled)
+        auto_refresh = st.toggle("🔄 Auto-Refresh (5min)", value=st.session_state.get('auto_refresh_enabled', True))
         st.session_state.auto_refresh_enabled = auto_refresh
     with col2:
         col2a, col2b = st.columns(2)
@@ -384,8 +403,8 @@ with st.sidebar:
                 st.session_state.clear()
                 st.rerun()
     
-    if st.session_state.auto_refresh_enabled:
-        time_until_refresh = REFRESH_INTERVAL - (time.time() - st.session_state.last_refresh)
+    if st.session_state.get('auto_refresh_enabled', True):
+        time_until_refresh = REFRESH_INTERVAL - time_since_refresh
         if time_until_refresh > 0:
             minutes, seconds = divmod(int(time_until_refresh), 60)
             st.markdown(f"<p style='text-align: center; font-size: 0.8em; color: #4CAF50;'>⏱️ Next refresh: {minutes:02d}:{seconds:02d}</p>", unsafe_allow_html=True)
@@ -399,18 +418,18 @@ with st.sidebar:
     date_source = "No Data"
     min_date = max_date = None
     
-    if not trades_df.empty and 'timestamp' in trades_df.columns:
+    if not trades_df.empty and 'timestamp' in trades_df.columns and trades_df['timestamp'].notna().any():
         trade_min = trades_df['timestamp'].min()
         trade_max = trades_df['timestamp'].max()
         if pd.notna(trade_min) and pd.notna(trade_max):
             days_span = (trade_max - trade_min).days
             days_old = (datetime.now(timezone('UTC')) - trade_max).days
             
-            if days_span > 0 and days_old <= 3:
+            if days_span >= 0 and days_old <= 3:
                 min_date, max_date = trade_min, trade_max
                 date_source = "Trade Data"
     
-    if min_date is None and not market_df.empty and 'timestamp' in market_df.columns:
+    if min_date is None and not market_df.empty and 'timestamp' in market_df.columns and market_df['timestamp'].notna().any():
         market_min = market_df['timestamp'].min()
         market_max = market_df['timestamp'].max()
         if pd.notna(market_min) and pd.notna(market_max):
@@ -428,16 +447,16 @@ with st.sidebar:
     latest_data_time = None
     data_source_for_time = "No Data"
     
-    if not trades_df.empty and 'timestamp' in trades_df.columns:
+    if not trades_df.empty and 'timestamp' in trades_df.columns and trades_df['timestamp'].notna().any():
         latest_trade = trades_df['timestamp'].max()
         if pd.notna(latest_trade):
             latest_data_time = latest_trade
             data_source_for_time = "Latest Trade"
     
-    if not market_df.empty and 'timestamp' in market_df.columns:
+    if not market_df.empty and 'timestamp' in market_df.columns and market_df['timestamp'].notna().any():
         latest_market = market_df['timestamp'].max()
         if pd.notna(latest_market):
-            if latest_data_time is None or latest_market > latest_market:
+            if latest_data_time is None or latest_market > latest_data_time:
                 latest_data_time = latest_market
                 data_source_for_time = "Latest Market Data"
     
@@ -552,7 +571,7 @@ with tab1:
             st.metric(f"Last Price for {selected_asset}", f"${last_price:{price_format}}")
 
         with st.expander("🔍 Data Resolution Inspector"):
-            if not asset_market_data.empty:
+             if not asset_market_data.empty:
                 df_sorted = asset_market_data.sort_values('timestamp')
                 time_diffs = df_sorted['timestamp'].diff().dropna()
                 col1, col2, col3 = st.columns(3)
@@ -795,6 +814,6 @@ with tab3:
 # =========================
 # Trigger auto-refresh check at the end 
 # =========================
-if st.session_state.auto_refresh_enabled:
-    time.sleep(5)
+if st.session_state.get('auto_refresh_enabled', True):
+    time.sleep(1)
     st.rerun()
