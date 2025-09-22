@@ -282,11 +282,21 @@ def load_data(trades_link: str, market_link: str):
         if "asset" in trades.columns: 
             trades["asset"] = trades["asset"].apply(unify_symbol)
         
-        # Use raw timestamps without any timezone adjustments
+        # ======================================================================
+        # MODIFICATION START: Standardize trade timestamps to UTC
+        # ======================================================================
         if 'timestamp' in trades.columns: 
             trades['timestamp'] = pd.to_datetime(trades['timestamp'], errors='coerce')
-            # Keep timestamps exactly as they are in the data
-        
+            # If timestamp is naive (no timezone), assume it's UTC
+            if trades['timestamp'].dt.tz is None:
+                trades['timestamp'] = trades['timestamp'].dt.tz_localize('UTC')
+            # If it has a timezone, convert it to UTC to be safe
+            else:
+                trades['timestamp'] = trades['timestamp'].dt.tz_convert('UTC')
+        # ======================================================================
+        # MODIFICATION END
+        # ======================================================================
+
         # Convert numeric columns
         for col in ["quantity", "price", "usd_value", "p_up", "p_down", "pnl", "pnl_pct"]:
             if col in trades.columns: 
@@ -296,11 +306,21 @@ def load_data(trades_link: str, market_link: str):
         market = lower_strip_cols(market)
         market = market.rename(columns={"product_id": "asset"})
         
-        # Use raw timestamps without any timezone adjustments
+        # ======================================================================
+        # MODIFICATION START: Standardize market timestamps to UTC
+        # ======================================================================
         if 'timestamp' in market.columns: 
             market['timestamp'] = pd.to_datetime(market['timestamp'], errors='coerce')
-            # Keep timestamps exactly as they are in the data
-        
+            # If timestamp is naive (no timezone), assume it's UTC
+            if market['timestamp'].dt.tz is None:
+                market['timestamp'] = market['timestamp'].dt.tz_localize('UTC')
+            # If it has a timezone, convert it to UTC
+            else:
+                market['timestamp'] = market['timestamp'].dt.tz_convert('UTC')
+        # ======================================================================
+        # MODIFICATION END
+        # ======================================================================
+
         if 'asset' in market.columns: market["asset"] = market["asset"].apply(unify_symbol)
         market = normalize_prob_columns(market)
         for col in ["open", "high", "low", "close", "p_up", "p_down"]:
@@ -392,7 +412,7 @@ with st.sidebar:
         if pd.notna(trade_min) and pd.notna(trade_max):
             # Only use trade dates if they span more than 1 day AND are recent
             days_span = (trade_max - trade_min).days
-            days_old = (datetime.now() - trade_max).days
+            days_old = (datetime.now(timezone('UTC')) - trade_max).days
             
             if days_span > 0 and days_old <= 3:  # Recent trade data
                 min_date, max_date = trade_min, trade_max
@@ -408,7 +428,10 @@ with st.sidebar:
     
     # Display the date range
     if min_date and max_date:
-        st.markdown(f"<p style='text-align: center;'><strong>{min_date.strftime('%m/%d/%y')} - {max_date.strftime('%m/%d/%y')}</strong></p>", unsafe_allow_html=True)
+        # MODIFICATION: Convert to local time for display
+        min_date_local = min_date.tz_convert(LOCAL_TZ)
+        max_date_local = max_date.tz_convert(LOCAL_TZ)
+        st.markdown(f"<p style='text-align: center;'><strong>{min_date_local.strftime('%m/%d/%y')} - {max_date_local.strftime('%m/%d/%y')}</strong></p>", unsafe_allow_html=True)
         st.markdown(f"<p style='text-align: center; font-size: 0.8em; color: grey;'>Source: {date_source}</p>", unsafe_allow_html=True)
     else:
         st.markdown("<p style='text-align: center; color: orange;'>⚠️ No Date Range Available</p>", unsafe_allow_html=True)
@@ -434,7 +457,9 @@ with st.sidebar:
     
     # Display the actual latest data timestamp
     if latest_data_time:
-        st.markdown(f"<p style='text-align: center; font-size: 0.9em; color: grey;'>{data_source_for_time}: {latest_data_time.strftime('%Y-%m-%d %H:%M')}</p>", unsafe_allow_html=True)
+        # MODIFICATION: Convert to local time for display
+        latest_data_time_local = latest_data_time.tz_convert(LOCAL_TZ)
+        st.markdown(f"<p style='text-align: center; font-size: 0.9em; color: grey;'>{data_source_for_time}: {latest_data_time_local.strftime('%Y-%m-%d %H:%M')}</p>", unsafe_allow_html=True)
     else:
         st.markdown(f"<p style='text-align: center; font-size: 0.9em; color: grey;'>No data timestamps available</p>", unsafe_allow_html=True)
     st.markdown("---")
@@ -535,7 +560,9 @@ with tab1:
                 col1, col2, col3 = st.columns(3)
                 with col1:
                     st.write(f"**Total Data Points:** {len(df_sorted):,}")
-                    st.write(f"**Date Range:** {df_sorted['timestamp'].min().strftime('%Y-%m-%d %H:%M')} to {df_sorted['timestamp'].max().strftime('%Y-%m-%d %H:%M')}")
+                    min_ts_local = df_sorted['timestamp'].min().tz_convert(LOCAL_TZ)
+                    max_ts_local = df_sorted['timestamp'].max().tz_convert(LOCAL_TZ)
+                    st.write(f"**Date Range:** {min_ts_local.strftime('%Y-%m-%d %H:%M')} to {max_ts_local.strftime('%Y-%m-%d %H:%M')}")
                 with col2:
                     if len(time_diffs) > 0:
                         mode_diff = time_diffs.mode()[0] if len(time_diffs.mode()) > 0 else time_diffs.median()
@@ -546,7 +573,9 @@ with tab1:
                     recent_data = df_sorted.tail(10)
                     st.write("**Last 10 Timestamps:**")
                     for ts in recent_data['timestamp']:
-                        st.write(f"• {ts.strftime('%m/%d %H:%M:%S')}")
+                        # MODIFICATION: Convert to local time for display
+                        ts_local = ts.tz_convert(LOCAL_TZ)
+                        st.write(f"• {ts_local.strftime('%m/%d %H:%M:%S')}")
 
         st.markdown("---")
         df = asset_market_data.sort_values("timestamp")
@@ -561,7 +590,9 @@ with tab1:
             else: start_date = df["timestamp"].min()
             vis = df[(df["timestamp"] >= start_date) & (df["timestamp"] <= end_date)].copy()
             if not vis.empty:
-                st.info(f"Showing {len(vis):,} candles from {start_date.strftime('%Y-%m-%d %H:%M')} to {end_date.strftime('%Y-%m-%d %H:%M')}")
+                start_date_local = start_date.tz_convert(LOCAL_TZ)
+                end_date_local = end_date.tz_convert(LOCAL_TZ)
+                st.info(f"Showing {len(vis):,} candles from {start_date_local.strftime('%Y-%m-%d %H:%M')} to {end_date_local.strftime('%Y-%m-%d %H:%M')}")
                 fig = go.Figure()
                 fig.add_trace(go.Candlestick(x=vis["timestamp"], open=vis["open"], high=vis["high"], low=vis["low"], close=vis["close"], name=selected_asset, increasing_line_color='#26a69a', decreasing_line_color='#ef5350', increasing_fillcolor='rgba(38, 166, 154, 0.5)', decreasing_fillcolor='rgba(239, 83, 80, 0.5)', line=dict(width=1)))
                 if 'p_up' in vis.columns and 'p_down' in vis.columns:
@@ -663,7 +694,8 @@ with tab3:
         # Create Time column first and ensure it works
         if "timestamp" in display_df.columns:
             display_df["timestamp"] = pd.to_datetime(display_df["timestamp"], errors="coerce")
-            display_df["Time"] = display_df["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S")
+            # MODIFICATION: Convert to local time for display
+            display_df["Time"] = display_df["timestamp"].dt.tz_convert(LOCAL_TZ).strftime("%Y-%m-%d %H:%M:%S")
             st.write("Debug - Time column sample:", display_df["Time"].iloc[0] if len(display_df) > 0 else "No data")
         else:
             st.warning("No timestamp column found in trades data")
@@ -712,10 +744,10 @@ with tab3:
         
         # Show timing debug
         if not display_df.empty and "Time" in display_df.columns:
-            latest_trade_time = display_df["Time"].iloc[0]
-            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            st.write(f"Latest trade: {latest_trade_time}")
-            st.write(f"Current time: {current_time}")
+            latest_trade_time_str = display_df["Time"].iloc[0]
+            current_time_local = datetime.now(timezone(LOCAL_TZ)).strftime("%Y-%m-%d %H:%M:%S")
+            st.write(f"Latest trade (Local): {latest_trade_time_str}")
+            st.write(f"Current time (Local): {current_time_local}")
             
     else:
         st.warning("No trade history to display.")
@@ -726,5 +758,3 @@ with tab3:
 if st.session_state.auto_refresh_enabled:
     time.sleep(5)  # Wait 5 seconds before checking again
     st.rerun()
-
-
