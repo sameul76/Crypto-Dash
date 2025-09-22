@@ -243,9 +243,6 @@ def _read_parquet_bytes(b: bytes, label: str) -> pd.DataFrame:
 
 @st.cache_data(ttl=600)
 def load_data(trades_link: str, market_link: str):
-    # ======================================================================
-    # FIX: Initialize DataFrames to prevent UnboundLocalError
-    # ======================================================================
     trades = pd.DataFrame()
     market = pd.DataFrame()
 
@@ -558,11 +555,43 @@ with tab1:
             vis = df[(df["timestamp"] >= start_date) & (df["timestamp"] <= end_date)].copy()
             if not vis.empty:
                 
+                vis['timestamp'] = vis['timestamp'].dt.tz_convert(LOCAL_TZ)
+                
                 start_date_local = start_date.tz_convert(LOCAL_TZ)
                 end_date_local = end_date.tz_convert(LOCAL_TZ)
                 st.info(f"Showing {len(vis):,} candles from {start_date_local.strftime('%Y-%m-%d %H:%M')} to {end_date_local.strftime('%Y-%m-%d %H:%M')}")
+                
                 fig = go.Figure()
-                fig.add_trace(go.Candlestick(x=vis["timestamp"], open=vis["open"], high=vis["high"], low=vis["low"], close=vis["close"], name=selected_asset, increasing_line_color='#26a69a', decreasing_line_color='#ef5350', increasing_fillcolor='rgba(38, 166, 154, 0.5)', decreasing_fillcolor='rgba(239, 83, 80, 0.5)', line=dict(width=1)))
+                
+                # ======================================================================
+                # FINAL FIX: Add a hovertemplate to the candlestick trace
+                # This explicitly tells Plotly to format the time correctly.
+                # ======================================================================
+                price_format = ".6f" if vis['close'].iloc[-1] < 1 else ".4f"
+                candlestick_hovertemplate = (
+                    '<b>Time: %{x|%Y-%m-%d %H:%M}</b><br><br>' +
+                    f'Open: %{{open:{price_format}}}<br>' +
+                    f'High: %{{high:{price_format}}}<br>' +
+                    f'Low: %{{low:{price_format}}}<br>' +
+                    f'Close: %{{close:{price_format}}}<extra></extra>'
+                )
+                
+                fig.add_trace(go.Candlestick(
+                    x=vis["timestamp"], 
+                    open=vis["open"], 
+                    high=vis["high"], 
+                    low=vis["low"], 
+                    close=vis["close"], 
+                    name=selected_asset, 
+                    increasing_line_color='#26a69a', 
+                    decreasing_line_color='#ef5350', 
+                    increasing_fillcolor='rgba(38, 166, 154, 0.5)', 
+                    decreasing_fillcolor='rgba(239, 83, 80, 0.5)', 
+                    line=dict(width=1),
+                    hovertemplate=candlestick_hovertemplate
+                ))
+                # ======================================================================
+
                 if 'p_up' in vis.columns and 'p_down' in vis.columns:
                     prob_data = vis.dropna(subset=['p_up', 'p_down'])
                     if not prob_data.empty:
@@ -570,17 +599,21 @@ with tab1:
                         prob_data['confidence'] = abs(prob_data['p_up'] - prob_data['p_down'])
                         prob_data['signal_strength'] = prob_data['confidence'] * 100
                         colors = ['#ff6b6b' if p_down > p_up else '#51cf66' for p_up, p_down in zip(prob_data['p_up'], prob_data['p_down'])]
-                        fig.add_trace(go.Scatter(x=prob_data["timestamp"], y=prob_data["close"], mode='markers', marker=dict(size=prob_data['signal_strength'] / 5 + 3, color=colors, opacity=0.7, line=dict(width=1, color='white')), name='ML Signals', customdata=list(zip(prob_data['p_up'], prob_data['p_down'], prob_data['confidence'])), hovertemplate='<b>ML Signal</b><br>Time: %{x}<br>Price: $%{y:.6f}<br>P(Up): %{customdata[0]:.3f}<br>P(Down): %{customdata[1]:.3f}<br>Confidence: %{customdata[2]:.3f}<extra></extra>'))
+                        fig.add_trace(go.Scatter(x=prob_data["timestamp"], y=prob_data["close"], mode='markers', marker=dict(size=prob_data['signal_strength'] / 5 + 3, color=colors, opacity=0.7, line=dict(width=1, color='white')), name='ML Signals', customdata=list(zip(prob_data['p_up'], prob_data['p_down'], prob_data['confidence'])), hovertemplate='<b>ML Signal</b><br>Time: %{x|%Y-%m-%d %H:%M}<br>Price: $%{y:.6f}<br>P(Up): %{customdata[0]:.3f}<br>P(Down): %{customdata[1]:.3f}<br>Confidence: %{customdata[2]:.3f}<extra></extra>'))
+                
                 if not trades_df.empty:
                     asset_trades = trades_df[(trades_df["asset"] == selected_asset) & (trades_df["timestamp"] >= start_date) & (trades_df["timestamp"] <= end_date)].copy()
                     
                     if not asset_trades.empty:
+                        asset_trades['timestamp'] = asset_trades['timestamp'].dt.tz_convert(LOCAL_TZ)
+                    
+                    if not asset_trades.empty:
                         buy_trades = asset_trades[asset_trades["unified_action"].str.lower().isin(["buy", "open"])]
                         if not buy_trades.empty:
-                            fig.add_trace(go.Scatter(x=buy_trades["timestamp"], y=buy_trades["price"], mode="markers+text", name="BUY", marker=dict(symbol='triangle-up', size=16, color='#4caf50', line=dict(width=2, color='white')), text=['▲'] * len(buy_trades), textposition="top center", textfont=dict(size=12, color='#4caf50'), customdata=buy_trades.get('reason', ''), hovertemplate='<b>BUY ORDER</b><br>Time: %{x}<br>Price: $%{y:.6f}<br>Reason: %{customdata}<extra></extra>'))
+                            fig.add_trace(go.Scatter(x=buy_trades["timestamp"], y=buy_trades["price"], mode="markers+text", name="BUY", marker=dict(symbol='triangle-up', size=16, color='#4caf50', line=dict(width=2, color='white')), text=['▲'] * len(buy_trades), textposition="top center", textfont=dict(size=12, color='#4caf50'), customdata=buy_trades.get('reason', ''), hovertemplate='<b>BUY ORDER</b><br>Time: %{x|%Y-%m-%d %H:%M}<br>Price: $%{y:.6f}<br>Reason: %{customdata}<extra></extra>'))
                         sell_trades = asset_trades[asset_trades["unified_action"].str.lower().isin(["sell", "close"])]
                         if not sell_trades.empty:
-                            fig.add_trace(go.Scatter(x=sell_trades["timestamp"], y=sell_trades["price"], mode="markers+text", name="SELL", marker=dict(symbol='triangle-down', size=16, color='#f44336', line=dict(width=2, color='white')), text=['▼'] * len(sell_trades), textposition="bottom center", textfont=dict(size=12, color='#f44336'), customdata=sell_trades.get('reason', ''), hovertemplate='<b>SELL ORDER</b><br>Time: %{x}<br>Price: $%{y:.6f}<br>Reason: %{customdata}<extra></extra>'))
+                            fig.add_trace(go.Scatter(x=sell_trades["timestamp"], y=sell_trades["price"], mode="markers+text", name="SELL", marker=dict(symbol='triangle-down', size=16, color='#f44336', line=dict(width=2, color='white')), text=['▼'] * len(sell_trades), textposition="bottom center", textfont=dict(size=12, color='#f44336'), customdata=sell_trades.get('reason', ''), hovertemplate='<b>SELL ORDER</b><br>Time: %{x|%Y-%m-%d %H:%M}<br>Price: $%{y:.6f}<br>Reason: %{customdata}<extra></extra>'))
                         sorted_trades = asset_trades.sort_values("timestamp")
                         open_trades = []
                         for _, trade in sorted_trades.iterrows():
@@ -594,6 +627,7 @@ with tab1:
                                 line_color = "#4caf50" if pnl >= 0 else "#f44336"
                                 line_width = 4 if abs(pnl_pct) > 10 else 3 if abs(pnl_pct) > 5 else 2
                                 fig.add_trace(go.Scatter(x=[buy_trade['timestamp'], trade['timestamp']], y=[buy_trade['price'], trade['price']], mode='lines', line=dict(color=line_color, width=line_width, dash='solid'), opacity=0.8, showlegend=False, hovertemplate=f'<b>Trade P&L</b><br>P&L: ${pnl:.6f} ({pnl_pct:+.2f}%)<br>Hold Time: {trade["timestamp"] - buy_trade["timestamp"]}<extra></extra>', name='Trade P&L'))
+                
                 if range_choice in ["4 hours", "12 hours"]: tick_format = '%H:%M'; dtick = 'M30'
                 elif range_choice == "1 day": tick_format = '%H:%M'; dtick = 'M60'
                 elif range_choice == "3 days": tick_format = '%m/%d %H:%M'; dtick = 'M360'
