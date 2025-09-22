@@ -214,7 +214,6 @@ def match_trades_fifo(trades_df: pd.DataFrame):
                     if buys[0]['quantity'] < 1e-9:
                         buys.pop(0)
         
-        # Any remaining buys are open positions
         open_positions.extend(buys)
 
     matched_df = pd.DataFrame(matched_trades) if matched_trades else pd.DataFrame()
@@ -551,7 +550,6 @@ with st.sidebar:
                     price_str = "N/A"
                 st.markdown(f"""<div style="display: flex; justify-content: space-between; align-items: center;"><p style="color:grey; margin: 0;">{asset}</p><p style="color:grey; font-weight:bold; margin: 0;">{price_str}</p></div>""", unsafe_allow_html=True)
 
-
 # =========================
 # Main content tabs
 # =========================
@@ -676,12 +674,11 @@ with tab1:
                                 line_width = 4 if abs(pnl_pct) > 10 else 3 if abs(pnl_pct) > 5 else 2
                                 fig.add_trace(go.Scatter(x=[buy_trade['timestamp'], trade['timestamp']], y=[buy_trade['price'], trade['price']], mode='lines', line=dict(color=line_color, width=line_width, dash='solid'), opacity=0.8, showlegend=False, hovertemplate=f'<b>Trade P&L</b><br>P&L: ${pnl:.6f} ({pnl_pct:+.2f}%)<br>Hold Time: {trade["timestamp"] - buy_trade["timestamp"]}<extra></extra>', name='Trade P&L'))
                 
-                # ======================================================================
-                # MODIFICATION: Always include time in tick format
-                # ======================================================================
-                if range_choice in ["4 hours", "12 hours"]: tick_format = '%H:%M'; dtick = 'M30'
-                elif range_choice == "1 day": tick_format = '%m/%d %H:%M'; dtick = 'M60'
-                else: tick_format = '%m/%d %H:%M'; dtick = None
+                # FINAL MODIFICATION for axis ticks
+                if range_choice in ["4 hours", "12 hours"]: 
+                    tick_format = '%H:%M'
+                else: 
+                    tick_format = '%m/%d %H:%M'
                 
                 price_range = vis['high'].max() - vis['low'].min()
                 y_padding = price_range * 0.05
@@ -693,10 +690,9 @@ with tab1:
                         title=f"Time ({LOCAL_TZ})", 
                         type='date', 
                         tickformat=tick_format, 
-                        dtick=dtick, 
                         showgrid=True, 
                         gridcolor='rgba(128,128,128,0.1)',
-                        tickangle=45 if range_choice in ["4 hours", "12 hours", "1 day", "3 days"] else 0
+                        tickangle=45
                     ), 
                     yaxis=dict(
                         title="Price (USD)", 
