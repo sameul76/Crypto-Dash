@@ -50,24 +50,10 @@ def lower_strip_cols(df: pd.DataFrame) -> pd.DataFrame:
 
 def to_local_naive(series: pd.Series) -> pd.Series:
     """
-    Fixed timezone handling - doesn't force UTC when timestamps are already local
+    Simple timestamp parser - no timezone conversions
     """
     s = series.copy()
-    
-    # Convert to datetime without forcing timezone assumptions
-    if pd.api.types.is_numeric_dtype(s):
-        # Only if truly numeric (unix timestamps), assume UTC
-        s = pd.to_datetime(s, unit="s", errors="coerce", utc=True)
-        s = s.dt.tz_convert(LOCAL_TZ).dt.tz_localize(None)
-    else:
-        # If already datetime or string, don't assume timezone
-        s = pd.to_datetime(s, errors="coerce")
-        
-        # Only convert timezone if source has timezone info
-        if s.dt.tz is not None:
-            s = s.dt.tz_convert(LOCAL_TZ).dt.tz_localize(None)
-        # If timezone-naive, assume already in correct local time (don't convert)
-    
+    s = pd.to_datetime(s, errors="coerce")
     return s
 
 def unify_symbol(val: str) -> str:
@@ -296,14 +282,10 @@ def load_data(trades_link: str, market_link: str):
         if "asset" in trades.columns: 
             trades["asset"] = trades["asset"].apply(unify_symbol)
         
-        # Fix timestamp parsing for your ISO format - NO TIMEZONE CONVERSION
+        # Use raw timestamps without any timezone adjustments
         if 'timestamp' in trades.columns: 
-            # Your timestamps are already in local time, just parse them as-is
             trades['timestamp'] = pd.to_datetime(trades['timestamp'], errors='coerce')
-            # DO NOT convert timezone - your timestamps are already correct local time
-            # Remove any timezone info if pandas added it
-            if trades['timestamp'].dt.tz is not None:
-                trades['timestamp'] = trades['timestamp'].dt.tz_localize(None)
+            # Keep timestamps exactly as they are in the data
         
         # Convert numeric columns
         for col in ["quantity", "price", "usd_value", "p_up", "p_down", "pnl", "pnl_pct"]:
@@ -314,12 +296,10 @@ def load_data(trades_link: str, market_link: str):
         market = lower_strip_cols(market)
         market = market.rename(columns={"product_id": "asset"})
         
-        # FIXED: Treat market timestamps the same as trade timestamps
+        # Use raw timestamps without any timezone adjustments
         if 'timestamp' in market.columns: 
             market['timestamp'] = pd.to_datetime(market['timestamp'], errors='coerce')
-            # Remove any timezone info if pandas added it
-            if market['timestamp'].dt.tz is not None:
-                market['timestamp'] = market['timestamp'].dt.tz_localize(None)
+            # Keep timestamps exactly as they are in the data
         
         if 'asset' in market.columns: market["asset"] = market["asset"].apply(unify_symbol)
         market = normalize_prob_columns(market)
@@ -426,9 +406,30 @@ with st.sidebar:
     else:
         st.markdown("<p style='text-align: center; color: orange;'>⚠️ No Date Range Available</p>", unsafe_allow_html=True)
 
-    # Last updated timestamp
-    now_local = datetime.now(timezone(LOCAL_TZ))
-    st.markdown(f"<p style='text-align: center; font-size: 0.9em; color: grey;'>Last updated: {now_local.strftime('%Y-%m-%d %H:%M')}</p>", unsafe_allow_html=True)
+    # Show actual data freshness instead of "last updated"
+    latest_data_time = None
+    data_source_for_time = "No Data"
+    
+    # Get the most recent timestamp from either trades or market data
+    if not trades_df.empty and 'timestamp' in trades_df.columns:
+        latest_trade = trades_df['timestamp'].max()
+        if pd.notna(latest_trade):
+            latest_data_time = latest_trade
+            data_source_for_time = "Latest Trade"
+    
+    # Check if market data is more recent
+    if not market_df.empty and 'timestamp' in market_df.columns:
+        latest_market = market_df['timestamp'].max()
+        if pd.notna(latest_market):
+            if latest_data_time is None or latest_market > latest_data_time:
+                latest_data_time = latest_market
+                data_source_for_time = "Latest Market Data"
+    
+    # Display the actual latest data timestamp
+    if latest_data_time:
+        st.markdown(f"<p style='text-align: center; font-size: 0.9em; color: grey;'>{data_source_for_time}: {latest_data_time.strftime('%Y-%m-%d %H:%M')}</p>", unsafe_allow_html=True)
+    else:
+        st.markdown(f"<p style='text-align: center; font-size: 0.9em; color: grey;'>No data timestamps available</p>", unsafe_allow_html=True)
     st.markdown("---")
 
     # Data status indicators
