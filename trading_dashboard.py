@@ -177,11 +177,13 @@ def calculate_open_positions(trades_df: pd.DataFrame, market_df: pd.DataFrame) -
                 })
     return pd.DataFrame(open_positions)
 
-def match_trades_fifo(trades_df: pd.DataFrame) -> pd.DataFrame:
+def match_trades_fifo(trades_df: pd.DataFrame):
     if trades_df is None or trades_df.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame()
 
     matched_trades = []
+    open_positions = []
+    
     for asset, group in trades_df.groupby('asset'):
         buys = [row.to_dict() for _, row in group[group['unified_action'].isin(['buy', 'open'])].sort_values('timestamp').iterrows()]
         sells = [row.to_dict() for _, row in group[group['unified_action'].isin(['sell', 'close'])].sort_values('timestamp').iterrows()]
@@ -192,7 +194,6 @@ def match_trades_fifo(trades_df: pd.DataFrame) -> pd.DataFrame:
             while sell_qty_remaining > 1e-9 and buys:
                 buy = buys[0]
                 buy_qty_remaining = buy.get('quantity', 0)
-
                 trade_qty = min(sell_qty_remaining, buy_qty_remaining)
 
                 if trade_qty > 0:
@@ -200,16 +201,11 @@ def match_trades_fifo(trades_df: pd.DataFrame) -> pd.DataFrame:
                     hold_time = sell['timestamp'] - buy['timestamp']
                     
                     matched_trades.append({
-                        'Asset': asset,
-                        'Quantity': trade_qty,
-                        'Buy Time': buy['timestamp'],
-                        'Buy Price': buy['price'],
-                        'Sell Time': sell['timestamp'],
-                        'Sell Price': sell['price'],
-                        'Hold Time': hold_time,
-                        'P&L ($)': pnl,
-                        'Reason Buy': buy.get('reason'),
-                        'Reason Sell': sell.get('reason')
+                        'Asset': asset, 'Quantity': trade_qty,
+                        'Buy Time': buy['timestamp'], 'Buy Price': buy['price'],
+                        'Sell Time': sell['timestamp'], 'Sell Price': sell['price'],
+                        'Hold Time': hold_time, 'P&L ($)': pnl,
+                        'Reason Buy': buy.get('reason'), 'Reason Sell': sell.get('reason')
                     })
 
                     sell_qty_remaining -= trade_qty
@@ -217,14 +213,21 @@ def match_trades_fifo(trades_df: pd.DataFrame) -> pd.DataFrame:
 
                     if buys[0]['quantity'] < 1e-9:
                         buys.pop(0)
-
-    if not matched_trades:
-        return pd.DataFrame()
         
-    result_df = pd.DataFrame(matched_trades)
-    result_df['P&L %'] = (result_df['P&L ($)'] / (result_df['Buy Price'] * result_df['Quantity'])) * 100
-    result_df = result_df.sort_values("Sell Time", ascending=False)
-    return result_df
+        # Any remaining buys are open positions
+        open_positions.extend(buys)
+
+    matched_df = pd.DataFrame(matched_trades) if matched_trades else pd.DataFrame()
+    open_df = pd.DataFrame(open_positions) if open_positions else pd.DataFrame()
+
+    if not matched_df.empty:
+        matched_df['P&L %'] = (matched_df['P&L ($)'] / (matched_df['Buy Price'] * matched_df['Quantity'])) * 100
+        matched_df = matched_df.sort_values("Sell Time", ascending=False)
+        
+    if not open_df.empty:
+        open_df = open_df.sort_values("timestamp", ascending=False)
+
+    return matched_df, open_df
 
 def extract_drive_id(url_or_id: str) -> str:
     if not url_or_id: return ""
@@ -454,7 +457,7 @@ with st.sidebar:
     if not market_df.empty and 'timestamp' in market_df.columns:
         latest_market = market_df['timestamp'].max()
         if pd.notna(latest_market):
-            if latest_data_time is None or latest_market > latest_data_time:
+            if latest_data_time is None or latest_market > latest_market:
                 latest_data_time = latest_market
                 data_source_for_time = "Latest Market Data"
     
@@ -516,7 +519,6 @@ with st.sidebar:
             asset_name = pos["Asset"]
             current_price = pos["Current Price"]
             
-            # MODIFICATION: Dynamic price formatting
             if current_price < 0.001: price_format = ".8f"
             elif current_price < 1: price_format = ".6f"
             else: price_format = ".2f"
@@ -540,7 +542,6 @@ with st.sidebar:
                 if not latest_market_data.empty:
                     last_price = latest_market_data.sort_values('timestamp').iloc[-1]['close']
                     
-                    # MODIFICATION: Dynamic price formatting
                     if last_price < 0.001: price_format = ".8f"
                     elif last_price < 1: price_format = ".6f"
                     else: price_format = ".2f"
@@ -566,7 +567,6 @@ with tab1:
         if not asset_market_data.empty:
             last_price = asset_market_data.sort_values('timestamp').iloc[-1]['close']
             
-            # MODIFICATION: Dynamic price formatting
             if last_price < 0.001: price_format = ",.8f"
             elif last_price < 1: price_format = ",.6f"
             else: price_format = ",.2f"
@@ -624,6 +624,7 @@ with tab1:
                     line=dict(width=1), hoverinfo='none' 
                 ))
                 
+                # MODIFICATION: Dynamic price formatting for hovertemplate
                 price_format = ".8f" if vis['close'].iloc[-1] < 0.001 else ".6f" if vis['close'].iloc[-1] < 1 else ".4f"
                 hover_template = (
                     '<b>Time: %{x|%Y-%m-%d %H:%M} ('+ LOCAL_TZ +')</b><br><br>' +
@@ -676,13 +677,15 @@ with tab1:
                                 line_width = 4 if abs(pnl_pct) > 10 else 3 if abs(pnl_pct) > 5 else 2
                                 fig.add_trace(go.Scatter(x=[buy_trade['timestamp'], trade['timestamp']], y=[buy_trade['price'], trade['price']], mode='lines', line=dict(color=line_color, width=line_width, dash='solid'), opacity=0.8, showlegend=False, hovertemplate=f'<b>Trade P&L</b><br>P&L: ${pnl:.6f} ({pnl_pct:+.2f}%)<br>Hold Time: {trade["timestamp"] - buy_trade["timestamp"]}<extra></extra>', name='Trade P&L'))
                 
+                # MODIFICATION: Ensure time is always shown on axis, and adjust angle
                 if range_choice in ["4 hours", "12 hours"]: tick_format = '%H:%M'; dtick = 'M30'
-                elif range_choice == "1 day": tick_format = '%H:%M'; dtick = 'M60'
-                elif range_choice == "3 days": tick_format = '%m/%d %H:%M'; dtick = 'M360'
-                else: tick_format = '%m/%d'; dtick = None
+                elif range_choice == "1 day": tick_format = '%m/%d %H:%M'; dtick = 'M60'
+                elif range_choice in ["3 days", "7 days"]: tick_format = '%m/%d %H:%M'; dtick = None
+                else: tick_format = '%m/%d %H:%M'; dtick = None
+                
                 price_range = vis['high'].max() - vis['low'].min()
                 y_padding = price_range * 0.05
-                fig.update_layout(title=f"{selected_asset} — Minute-Level Price & ML Signals ({range_choice})", template="plotly_white", xaxis_rangeslider_visible=False, xaxis=dict(title=f"Time ({LOCAL_TZ})", type='date', tickformat=tick_format, dtick=dtick, showgrid=True, gridcolor='rgba(128,128,128,0.1)', tickangle=45 if range_choice in ["4 hours", "12 hours", "1 day"] else 0), yaxis=dict(title="Price (USD)", tickformat='.6f' if vis['close'].iloc[-1] < 1 else '.4f', showgrid=True, gridcolor='rgba(128,128,128,0.1)', range=[vis['low'].min() - y_padding, vis['high'].max() + y_padding]), hovermode="x unified", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), height=750, margin=dict(l=60, r=20, t=80, b=80), plot_bgcolor='rgba(250,250,250,0.8)')
+                fig.update_layout(title=f"{selected_asset} — Minute-Level Price & ML Signals ({range_choice})", template="plotly_white", xaxis_rangeslider_visible=False, xaxis=dict(title=f"Time ({LOCAL_TZ})", type='date', tickformat=tick_format, dtick=dtick, showgrid=True, gridcolor='rgba(128,128,128,0.1)', tickangle=45 if range_choice in ["4 hours", "12 hours", "1 day", "3 days"] else 0), yaxis=dict(title="Price (USD)", tickformat='.8f' if vis['close'].iloc[-1] < 0.001 else '.6f' if vis['close'].iloc[-1] < 1 else '.4f', showgrid=True, gridcolor='rgba(128,128,128,0.1)', range=[vis['low'].min() - y_padding, vis['high'].max() + y_padding]), hovermode="x unified", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), height=750, margin=dict(l=60, r=20, t=80, b=80), plot_bgcolor='rgba(250,250,250,0.8)')
                 st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True, 'modeBarButtonsToAdd': ['drawline', 'drawopenpath', 'drawclosedpath'], 'scrollZoom': True})
                 
                 asset_trades = trades_df[(trades_df["asset"] == selected_asset) & (trades_df["timestamp"] >= start_date) & (trades_df["timestamp"] <= end_date)].copy() if not trades_df.empty else pd.DataFrame()
@@ -732,18 +735,18 @@ with tab2:
         st.warning("No trade data loaded to analyze P&L.")
 
 with tab3:
-    st.markdown("### Matched Trade History (FIFO)")
+    st.markdown("### Trade History")
     if not trades_df.empty:
-        matched_trades_df = match_trades_fifo(trades_df)
+        matched_df, open_df = match_trades_fifo(trades_df)
         
-        if not matched_trades_df.empty:
-            display_df = matched_trades_df.copy()
-            display_df['Buy Time'] = display_df['Buy Time'].dt.tz_convert(LOCAL_TZ).dt.strftime('%Y-%m-%d %H:%M:%S')
-            display_df['Sell Time'] = display_df['Sell Time'].dt.tz_convert(LOCAL_TZ).dt.strftime('%Y-%m-%d %H:%M:%S')
-            
-            display_df['Hold Time'] = display_df['Hold Time'].apply(lambda x: str(x).split('days')[-1].strip())
+        st.markdown("#### Completed Trades (FIFO)")
+        if not matched_df.empty:
+            display_matched = matched_df.copy()
+            display_matched['Buy Time'] = display_matched['Buy Time'].dt.tz_convert(LOCAL_TZ).dt.strftime('%Y-%m-%d %H:%M:%S')
+            display_matched['Sell Time'] = display_matched['Sell Time'].dt.tz_convert(LOCAL_TZ).dt.strftime('%Y-%m-%d %H:%M:%S')
+            display_matched['Hold Time'] = display_matched['Hold Time'].apply(lambda x: str(x).split('days')[-1].strip().split('.')[0])
 
-            st.dataframe(display_df,
+            st.dataframe(display_matched,
                 column_config={
                     "Asset": st.column_config.TextColumn(width="small"),
                     "Quantity": st.column_config.NumberColumn(format="%.4f", width="small"),
@@ -752,14 +755,33 @@ with tab3:
                     "P&L ($)": st.column_config.NumberColumn(format="$%.2f"),
                     "P&L %": st.column_config.NumberColumn(format="%.2f%%"),
                 },
-                use_container_width=True,
-                hide_index=True
+                use_container_width=True, hide_index=True
             )
         else:
-            st.warning("No completed (buy/sell) trades found to display.")
+            st.info("No completed (buy/sell) trades found.")
+
+        st.markdown("---")
+        st.markdown("#### Open Positions")
+        if not open_df.empty:
+            display_open = open_df[['timestamp', 'asset', 'quantity', 'price', 'reason']].copy()
+            display_open['Time'] = display_open['timestamp'].dt.tz_convert(LOCAL_TZ).dt.strftime('%Y-%m-%d %H:%M:%S')
+            display_open = display_open.rename(columns={
+                'asset': 'Asset', 'quantity': 'Quantity', 'price': 'Price', 'reason': 'Reason'
+            })
+            
+            st.dataframe(display_open[['Time', 'Asset', 'Quantity', 'Price', 'Reason']], 
+                column_config={
+                    "Asset": st.column_config.TextColumn(width="small"),
+                    "Quantity": st.column_config.NumberColumn(format="%.4f", width="small"),
+                    "Price": st.column_config.NumberColumn(format="$%.8f"),
+                },
+                use_container_width=True, hide_index=True
+            )
+        else:
+            st.info("No open positions.")
+            
     else:
         st.warning("No trade history to display.")
-
 
 # =========================
 # Trigger auto-refresh check at the end 
