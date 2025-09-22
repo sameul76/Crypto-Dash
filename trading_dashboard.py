@@ -563,17 +563,13 @@ with tab1:
                 
                 fig = go.Figure()
                 
-                # ======================================================================
-                # FINAL FIX: Add a hovertemplate to the candlestick trace
-                # This explicitly tells Plotly to format the time correctly.
-                # ======================================================================
                 price_format = ".6f" if vis['close'].iloc[-1] < 1 else ".4f"
                 candlestick_hovertemplate = (
                     '<b>Time: %{x|%Y-%m-%d %H:%M}</b><br><br>' +
-                    f'Open: %{{open:{price_format}}}<br>' +
-                    f'High: %{{high:{price_format}}}<br>' +
-                    f'Low: %{{low:{price_format}}}<br>' +
-                    f'Close: %{{close:{price_format}}}<extra></extra>'
+                    'Open: %{open:' + price_format + '}<br>' +
+                    'High: %{high:' + price_format + '}<br>' +
+                    'Low: %{low:' + price_format + '}<br>' +
+                    'Close: %{close:' + price_format + '}<extra></extra>'
                 )
                 
                 fig.add_trace(go.Candlestick(
@@ -590,7 +586,6 @@ with tab1:
                     line=dict(width=1),
                     hovertemplate=candlestick_hovertemplate
                 ))
-                # ======================================================================
 
                 if 'p_up' in vis.columns and 'p_down' in vis.columns:
                     prob_data = vis.dropna(subset=['p_up', 'p_down'])
