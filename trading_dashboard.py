@@ -177,17 +177,12 @@ def calculate_open_positions(trades_df: pd.DataFrame, market_df: pd.DataFrame) -
                 })
     return pd.DataFrame(open_positions)
 
-# ======================================================================
-# NEW FUNCTION: Match trades using FIFO logic
-# ======================================================================
 def match_trades_fifo(trades_df: pd.DataFrame) -> pd.DataFrame:
     if trades_df is None or trades_df.empty:
         return pd.DataFrame()
 
     matched_trades = []
-    # Process each asset separately
     for asset, group in trades_df.groupby('asset'):
-        # Create lists of buy and sell dictionaries to manage quantities
         buys = [row.to_dict() for _, row in group[group['unified_action'].isin(['buy', 'open'])].sort_values('timestamp').iterrows()]
         sells = [row.to_dict() for _, row in group[group['unified_action'].isin(['sell', 'close'])].sort_values('timestamp').iterrows()]
 
@@ -195,7 +190,7 @@ def match_trades_fifo(trades_df: pd.DataFrame) -> pd.DataFrame:
             sell_qty_remaining = sell.get('quantity', 0)
             
             while sell_qty_remaining > 1e-9 and buys:
-                buy = buys[0]  # Get the first buy (FIFO)
+                buy = buys[0]
                 buy_qty_remaining = buy.get('quantity', 0)
 
                 trade_qty = min(sell_qty_remaining, buy_qty_remaining)
@@ -217,11 +212,9 @@ def match_trades_fifo(trades_df: pd.DataFrame) -> pd.DataFrame:
                         'Reason Sell': sell.get('reason')
                     })
 
-                    # Update remaining quantities
                     sell_qty_remaining -= trade_qty
                     buys[0]['quantity'] -= trade_qty
 
-                    # If the buy is fully matched, remove it from the queue
                     if buys[0]['quantity'] < 1e-9:
                         buys.pop(0)
 
@@ -229,7 +222,6 @@ def match_trades_fifo(trades_df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
         
     result_df = pd.DataFrame(matched_trades)
-    # Calculate P&L %
     result_df['P&L %'] = (result_df['P&L ($)'] / (result_df['Buy Price'] * result_df['Quantity'])) * 100
     result_df = result_df.sort_values("Sell Time", ascending=False)
     return result_df
@@ -355,7 +347,6 @@ def load_data(trades_link: str, market_link: str):
 # =========================
 # Auto-Refresh Logic
 # =========================
-# (Code remains the same as previous versions)
 def check_auto_refresh():
     current_time = time.time()
     time_since_refresh = current_time - st.session_state.last_refresh
@@ -387,9 +378,8 @@ with st.expander("🔎 Debug — data status"):
     })
 
 # =========================
-# SIDEBAR
+# SIDEBAR WITH AUTO-REFRESH
 # =========================
-# (Code remains the same as previous versions)
 with st.sidebar:
     st.markdown("<h1 style='text-align: center;'>Crypto Strategy</h1>", unsafe_allow_html=True)
     
@@ -525,9 +515,19 @@ with st.sidebar:
             color = "#16a34a" if pnl >= 0 else "#ef4444"
             asset_name = pos["Asset"]
             current_price = pos["Current Price"]
-            price_format = ".6f" if current_price < 1 else ".2f"
+            
+            # MODIFICATION: Dynamic price formatting
+            if current_price < 0.001: price_format = ".8f"
+            elif current_price < 1: price_format = ".6f"
+            else: price_format = ".2f"
+
+            avg_entry_price = pos['Avg. Entry Price']
+            if avg_entry_price < 0.001: entry_price_format = ".8f"
+            elif avg_entry_price < 1: entry_price_format = ".6f"
+            else: entry_price_format = ".2f"
+
             st.markdown(f"""<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: -10px;"><p style="color:{color}; font-weight:bold; margin: 0;">{asset_name}</p><p style="color:black; font-weight:bold; margin: 0;">${current_price:{price_format}}</p></div>""", unsafe_allow_html=True)
-            st.caption(f"Qty: {pos['Quantity']:.4f} | Entry: ${pos['Avg. Entry Price']:.6f} | P&L: ${pnl:.2f}")
+            st.caption(f"Qty: {pos['Quantity']:.4f} | Entry: ${avg_entry_price:{entry_price_format}} | P&L: ${pnl:.2f}")
         st.markdown("---")
 
     if not market_df.empty and "asset" in market_df.columns:
@@ -539,7 +539,12 @@ with st.sidebar:
                 latest_market_data = market_df[market_df['asset'] == asset]
                 if not latest_market_data.empty:
                     last_price = latest_market_data.sort_values('timestamp').iloc[-1]['close']
-                    price_format = ".6f" if last_price < 1 else ".2f"
+                    
+                    # MODIFICATION: Dynamic price formatting
+                    if last_price < 0.001: price_format = ".8f"
+                    elif last_price < 1: price_format = ".6f"
+                    else: price_format = ".2f"
+                    
                     price_str = f"${last_price:{price_format}}"
                 else:
                     price_str = "N/A"
@@ -552,7 +557,6 @@ with st.sidebar:
 tab1, tab2, tab3 = st.tabs(["📈 Price & Trades", "💰 P&L Analysis", "📜 Trade History"])
 
 with tab1:
-    # (Code remains the same as previous versions)
     assets = sorted(market_df["asset"].dropna().unique()) if (not market_df.empty and "asset" in market_df.columns) else []
     if assets:
         default_index = assets.index(DEFAULT_ASSET) if DEFAULT_ASSET in assets else 0
@@ -561,7 +565,13 @@ with tab1:
         asset_market_data = market_df[market_df['asset'] == selected_asset] if not market_df.empty else pd.DataFrame()
         if not asset_market_data.empty:
             last_price = asset_market_data.sort_values('timestamp').iloc[-1]['close']
-            st.metric(f"Last Price for {selected_asset}", f"${last_price:,.6f}" if last_price < 1 else f"${last_price:,.2f}")
+            
+            # MODIFICATION: Dynamic price formatting
+            if last_price < 0.001: price_format = ",.8f"
+            elif last_price < 1: price_format = ",.6f"
+            else: price_format = ",.2f"
+            st.metric(f"Last Price for {selected_asset}", f"${last_price:{price_format}}")
+
         with st.expander("🔍 Data Resolution Inspector"):
             if not asset_market_data.empty:
                 df_sorted = asset_market_data.sort_values('timestamp')
@@ -614,7 +624,7 @@ with tab1:
                     line=dict(width=1), hoverinfo='none' 
                 ))
                 
-                price_format = ".6f" if vis['close'].iloc[-1] < 1 else ".4f"
+                price_format = ".8f" if vis['close'].iloc[-1] < 0.001 else ".6f" if vis['close'].iloc[-1] < 1 else ".4f"
                 hover_template = (
                     '<b>Time: %{x|%Y-%m-%d %H:%M} ('+ LOCAL_TZ +')</b><br><br>' +
                     'Open: %{customdata[0]:' + price_format + '}<br>' +
@@ -721,29 +731,24 @@ with tab2:
     else:
         st.warning("No trade data loaded to analyze P&L.")
 
-# =========================
-# MODIFICATION: Replaced this tab's logic with the new FIFO matching
-# =========================
 with tab3:
     st.markdown("### Matched Trade History (FIFO)")
     if not trades_df.empty:
         matched_trades_df = match_trades_fifo(trades_df)
         
         if not matched_trades_df.empty:
-            # Format for display
             display_df = matched_trades_df.copy()
             display_df['Buy Time'] = display_df['Buy Time'].dt.tz_convert(LOCAL_TZ).dt.strftime('%Y-%m-%d %H:%M:%S')
             display_df['Sell Time'] = display_df['Sell Time'].dt.tz_convert(LOCAL_TZ).dt.strftime('%Y-%m-%d %H:%M:%S')
             
-            # Format Hold Time to be more readable
             display_df['Hold Time'] = display_df['Hold Time'].apply(lambda x: str(x).split('days')[-1].strip())
 
             st.dataframe(display_df,
                 column_config={
                     "Asset": st.column_config.TextColumn(width="small"),
                     "Quantity": st.column_config.NumberColumn(format="%.4f", width="small"),
-                    "Buy Price": st.column_config.NumberColumn(format="$%.6f"),
-                    "Sell Price": st.column_config.NumberColumn(format="$%.6f"),
+                    "Buy Price": st.column_config.NumberColumn(format="$%.8f"),
+                    "Sell Price": st.column_config.NumberColumn(format="$%.8f"),
                     "P&L ($)": st.column_config.NumberColumn(format="$%.2f"),
                     "P&L %": st.column_config.NumberColumn(format="%.2f%%"),
                 },
@@ -754,6 +759,7 @@ with tab3:
             st.warning("No completed (buy/sell) trades found to display.")
     else:
         st.warning("No trade history to display.")
+
 
 # =========================
 # Trigger auto-refresh check at the end 
