@@ -562,7 +562,11 @@ with tab1:
                 st.info(f"Showing {len(vis):,} candles from {start_date_local.strftime('%Y-%m-%d %H:%M')} to {end_date_local.strftime('%Y-%m-%d %H:%M')}")
                 
                 fig = go.Figure()
-                
+
+                # ======================================================================
+                # FINAL FIX: Simplified hovertemplate using basic string concatenation
+                # to avoid f-string formatting issues with Plotly.
+                # ======================================================================
                 price_format = ".6f" if vis['close'].iloc[-1] < 1 else ".4f"
                 candlestick_hovertemplate = (
                     '<b>Time: %{x|%Y-%m-%d %H:%M}</b><br><br>' +
