@@ -381,7 +381,7 @@ with st.expander("🔎 Debug — data status"):
     })
 
 # =========================
-# SIDEBAR WITH AUTO-REFRESH
+# SIDEBAR
 # =========================
 with st.sidebar:
     st.markdown("<h1 style='text-align: center;'>Crypto Strategy</h1>", unsafe_allow_html=True)
@@ -624,7 +624,6 @@ with tab1:
                     line=dict(width=1), hoverinfo='none' 
                 ))
                 
-                # MODIFICATION: Dynamic price formatting for hovertemplate
                 price_format = ".8f" if vis['close'].iloc[-1] < 0.001 else ".6f" if vis['close'].iloc[-1] < 1 else ".4f"
                 hover_template = (
                     '<b>Time: %{x|%Y-%m-%d %H:%M} ('+ LOCAL_TZ +')</b><br><br>' +
@@ -677,15 +676,41 @@ with tab1:
                                 line_width = 4 if abs(pnl_pct) > 10 else 3 if abs(pnl_pct) > 5 else 2
                                 fig.add_trace(go.Scatter(x=[buy_trade['timestamp'], trade['timestamp']], y=[buy_trade['price'], trade['price']], mode='lines', line=dict(color=line_color, width=line_width, dash='solid'), opacity=0.8, showlegend=False, hovertemplate=f'<b>Trade P&L</b><br>P&L: ${pnl:.6f} ({pnl_pct:+.2f}%)<br>Hold Time: {trade["timestamp"] - buy_trade["timestamp"]}<extra></extra>', name='Trade P&L'))
                 
-                # MODIFICATION: Ensure time is always shown on axis, and adjust angle
+                # ======================================================================
+                # MODIFICATION: Always include time in tick format
+                # ======================================================================
                 if range_choice in ["4 hours", "12 hours"]: tick_format = '%H:%M'; dtick = 'M30'
                 elif range_choice == "1 day": tick_format = '%m/%d %H:%M'; dtick = 'M60'
-                elif range_choice in ["3 days", "7 days"]: tick_format = '%m/%d %H:%M'; dtick = None
                 else: tick_format = '%m/%d %H:%M'; dtick = None
                 
                 price_range = vis['high'].max() - vis['low'].min()
                 y_padding = price_range * 0.05
-                fig.update_layout(title=f"{selected_asset} — Minute-Level Price & ML Signals ({range_choice})", template="plotly_white", xaxis_rangeslider_visible=False, xaxis=dict(title=f"Time ({LOCAL_TZ})", type='date', tickformat=tick_format, dtick=dtick, showgrid=True, gridcolor='rgba(128,128,128,0.1)', tickangle=45 if range_choice in ["4 hours", "12 hours", "1 day", "3 days"] else 0), yaxis=dict(title="Price (USD)", tickformat='.8f' if vis['close'].iloc[-1] < 0.001 else '.6f' if vis['close'].iloc[-1] < 1 else '.4f', showgrid=True, gridcolor='rgba(128,128,128,0.1)', range=[vis['low'].min() - y_padding, vis['high'].max() + y_padding]), hovermode="x unified", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), height=750, margin=dict(l=60, r=20, t=80, b=80), plot_bgcolor='rgba(250,250,250,0.8)')
+                fig.update_layout(
+                    title=f"{selected_asset} — Minute-Level Price & ML Signals ({range_choice})", 
+                    template="plotly_white", 
+                    xaxis_rangeslider_visible=False, 
+                    xaxis=dict(
+                        title=f"Time ({LOCAL_TZ})", 
+                        type='date', 
+                        tickformat=tick_format, 
+                        dtick=dtick, 
+                        showgrid=True, 
+                        gridcolor='rgba(128,128,128,0.1)',
+                        tickangle=45 if range_choice in ["4 hours", "12 hours", "1 day", "3 days"] else 0
+                    ), 
+                    yaxis=dict(
+                        title="Price (USD)", 
+                        tickformat='.8f' if vis['close'].iloc[-1] < 0.001 else '.6f' if vis['close'].iloc[-1] < 1 else '.4f', 
+                        showgrid=True, 
+                        gridcolor='rgba(128,128,128,0.1)', 
+                        range=[vis['low'].min() - y_padding, vis['high'].max() + y_padding]
+                    ), 
+                    hovermode="x unified", 
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), 
+                    height=750, 
+                    margin=dict(l=60, r=20, t=80, b=80), 
+                    plot_bgcolor='rgba(250,250,250,0.8)'
+                )
                 st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True, 'modeBarButtonsToAdd': ['drawline', 'drawopenpath', 'drawclosedpath'], 'scrollZoom': True})
                 
                 asset_trades = trades_df[(trades_df["asset"] == selected_asset) & (trades_df["timestamp"] >= start_date) & (trades_df["timestamp"] <= end_date)].copy() if not trades_df.empty else pd.DataFrame()
@@ -746,7 +771,7 @@ with tab3:
             display_matched['Sell Time'] = display_matched['Sell Time'].dt.tz_convert(LOCAL_TZ).dt.strftime('%Y-%m-%d %H:%M:%S')
             display_matched['Hold Time'] = display_matched['Hold Time'].apply(lambda x: str(x).split('days')[-1].strip().split('.')[0])
 
-            st.dataframe(display_matched,
+            st.dataframe(display_matched[['Asset', 'Quantity', 'Buy Time', 'Buy Price', 'Sell Time', 'Sell Price', 'Hold Time', 'P&L ($)', 'P&L %']],
                 column_config={
                     "Asset": st.column_config.TextColumn(width="small"),
                     "Quantity": st.column_config.NumberColumn(format="%.4f", width="small"),
