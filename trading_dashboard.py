@@ -660,6 +660,14 @@ with tab1:
                         sell_trades = asset_trades[asset_trades["unified_action"].str.lower().isin(["sell", "close"])]
                         if not sell_trades.empty:
                             fig.add_trace(go.Scatter(x=sell_trades["timestamp"], y=sell_trades["price"], mode="markers+text", name="SELL", marker=dict(symbol='triangle-down', size=16, color='#f44336', line=dict(width=2, color='white')), text=['▼'] * len(sell_trades), textposition="bottom center", textfont=dict(size=12, color='#f44336'), customdata=sell_trades.get('reason', ''), hovertemplate='<b>SELL ORDER</b><br>Time: %{x|%Y-%m-%d %H:%M}<br>Price: $%{y:.6f}<br>Reason: %{customdata}<extra></extra>'))
+                        
+                        # Add trade markers at the bottom of the chart
+                        y_position = vis['low'].min() - (vis['high'].max() - vis['low'].min()) * 0.02
+                        if not buy_trades.empty:
+                            fig.add_trace(go.Scatter(x=buy_trades["timestamp"], y=[y_position] * len(buy_trades),mode="markers", name="Buy Signal (Bottom)", marker=dict(symbol='triangle-up', size=8, color='#4caf50', line=dict(width=1, color='white')), showlegend=False, hovertemplate='<b>BUY</b><br>Time: %{x|%Y-%m-%d %H:%M}<extra></extra>'))
+                        if not sell_trades.empty:
+                             fig.add_trace(go.Scatter(x=sell_trades["timestamp"], y=[y_position] * len(sell_trades),mode="markers", name="Sell Signal (Bottom)", marker=dict(symbol='triangle-down', size=8, color='#f44336', line=dict(width=1, color='white')), showlegend=False, hovertemplate='<b>SELL</b><br>Time: %{x|%Y-%m-%d %H:%M}<extra></extra>'))
+
                         sorted_trades = asset_trades.sort_values("timestamp")
                         open_trades = []
                         for _, trade in sorted_trades.iterrows():
@@ -674,7 +682,6 @@ with tab1:
                                 line_width = 4 if abs(pnl_pct) > 10 else 3 if abs(pnl_pct) > 5 else 2
                                 fig.add_trace(go.Scatter(x=[buy_trade['timestamp'], trade['timestamp']], y=[buy_trade['price'], trade['price']], mode='lines', line=dict(color=line_color, width=line_width, dash='solid'), opacity=0.8, showlegend=False, hovertemplate=f'<b>Trade P&L</b><br>P&L: ${pnl:.6f} ({pnl_pct:+.2f}%)<br>Hold Time: {trade["timestamp"] - buy_trade["timestamp"]}<extra></extra>', name='Trade P&L'))
                 
-                # FINAL MODIFICATION for axis ticks
                 if range_choice in ["4 hours", "12 hours"]: 
                     tick_format = '%H:%M'
                 else: 
