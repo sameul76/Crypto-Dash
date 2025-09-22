@@ -713,7 +713,7 @@ with tab3:
         # Show timing debug
         if not display_df.empty and "Time" in display_df.columns:
             latest_trade_time = display_df["Time"].iloc[0]
-           current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             st.write(f"Latest trade: {latest_trade_time}")
             st.write(f"Current time: {current_time}")
             
@@ -726,4 +726,5 @@ with tab3:
 if st.session_state.auto_refresh_enabled:
     time.sleep(5)  # Wait 5 seconds before checking again
     st.rerun()
+
 
