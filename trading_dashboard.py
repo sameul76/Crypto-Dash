@@ -305,20 +305,20 @@ def load_data(trades_link: str, market_link: str):
                 trades[col] = pd.to_numeric(trades[col], errors="coerce")
     
     if not market.empty:
-    market = lower_strip_cols(market)
-    market = market.rename(columns={"product_id": "asset"})
-    
-    # FIXED: Treat market timestamps the same as trade timestamps
-    if 'timestamp' in market.columns: 
-        market['timestamp'] = pd.to_datetime(market['timestamp'], errors='coerce')
-        # Remove any timezone info if pandas added it
-        if market['timestamp'].dt.tz is not None:
-            market['timestamp'] = market['timestamp'].dt.tz_localize(None)
-    
-    if 'asset' in market.columns: market["asset"] = market["asset"].apply(unify_symbol)
-    market = normalize_prob_columns(market)
-    for col in ["open", "high", "low", "close", "p_up", "p_down"]:
-        if col in market.columns: market[col] = pd.to_numeric(market[col], errors="coerce")
+        market = lower_strip_cols(market)
+        market = market.rename(columns={"product_id": "asset"})
+        
+        # FIXED: Treat market timestamps the same as trade timestamps
+        if 'timestamp' in market.columns: 
+            market['timestamp'] = pd.to_datetime(market['timestamp'], errors='coerce')
+            # Remove any timezone info if pandas added it
+            if market['timestamp'].dt.tz is not None:
+                market['timestamp'] = market['timestamp'].dt.tz_localize(None)
+        
+        if 'asset' in market.columns: market["asset"] = market["asset"].apply(unify_symbol)
+        market = normalize_prob_columns(market)
+        for col in ["open", "high", "low", "close", "p_up", "p_down"]:
+            if col in market.columns: market[col] = pd.to_numeric(market[col], errors="coerce")
     
     pnl_summary, trades_with_pnl, stats = calculate_pnl_and_metrics(trades) if not trades.empty else ({}, pd.DataFrame(), {})
     return trades_with_pnl, pnl_summary, stats, market
@@ -705,4 +705,3 @@ with tab3:
 if st.session_state.auto_refresh_enabled:
     time.sleep(5)  # Wait 5 seconds before checking again
     st.rerun()
-
