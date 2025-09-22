@@ -350,15 +350,22 @@ with st.sidebar:
     st.markdown("<h1 style='text-align: center;'>Crypto Strategy</h1>", unsafe_allow_html=True)
     
     # --- AUTO-REFRESH CONTROLS ---
-    col1, col2 = st.columns([3, 1])
+    col1, col2 = st.columns([2, 2])
     with col1:
         auto_refresh = st.toggle("🔄 Auto-Refresh (5min)", value=st.session_state.auto_refresh_enabled)
         st.session_state.auto_refresh_enabled = auto_refresh
     with col2:
-        if st.button("🔄"):
-            st.cache_data.clear()
-            st.session_state.last_refresh = time.time()
-            st.rerun()
+        col2a, col2b = st.columns(2)
+        with col2a:
+            if st.button("🔄"):
+                st.cache_data.clear()
+                st.session_state.last_refresh = time.time()
+                st.rerun()
+        with col2b:
+            if st.button("🗑️"):
+                st.cache_data.clear()
+                st.session_state.clear()
+                st.rerun()
     
     # Show countdown if auto-refresh is enabled
     if st.session_state.auto_refresh_enabled:
@@ -385,7 +392,7 @@ with st.sidebar:
         if pd.notna(trade_min) and pd.notna(trade_max):
             # Only use trade dates if they span more than 1 day AND are recent
             days_span = (trade_max - trade_min).days
-            days_old = (datetime.now(timezone(LOCAL_TZ)).replace(tzinfo=None) - trade_max).days
+            days_old = (datetime.now() - trade_max).days
             
             if days_span > 0 and days_old <= 3:  # Recent trade data
                 min_date, max_date = trade_min, trade_max
@@ -706,7 +713,7 @@ with tab3:
         # Show timing debug
         if not display_df.empty and "Time" in display_df.columns:
             latest_trade_time = display_df["Time"].iloc[0]
-            current_time = datetime.now(timezone(LOCAL_TZ)).strftime("%Y-%m-%d %H:%M:%S")
+           current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             st.write(f"Latest trade: {latest_trade_time}")
             st.write(f"Current time: {current_time}")
             
@@ -719,3 +726,4 @@ with tab3:
 if st.session_state.auto_refresh_enabled:
     time.sleep(5)  # Wait 5 seconds before checking again
     st.rerun()
+
