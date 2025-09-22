@@ -246,27 +246,20 @@ def load_data(trades_link: str, market_link: str):
     raw_trades = download_drive_file_bytes(trades_link)
     trades = _read_parquet_bytes(raw_trades, "Trades")
     raw_market = download_drive_file_bytes(market_link)
-    market = _read_parquet_bytes(raw_market, "Market")
     
     if not trades.empty:
         trades = lower_strip_cols(trades)
         
-        # Handle your specific trade file structure
         column_mapping = {}
         if "value" in trades.columns: column_mapping["value"] = "usd_value"
         
-        # Since your file has both 'action' and 'side', use 'side' for trading direction
-        # and keep 'action' for position type (OPEN/CLOSE)
         if "side" in trades.columns and "action" in trades.columns:
-            # Rename side to trade_direction to avoid conflict
             column_mapping["side"] = "trade_direction" 
         elif "side" in trades.columns and "action" not in trades.columns:
             column_mapping["side"] = "action"
         
         trades = trades.rename(columns=column_mapping)
         
-        # FIXED: Create unified_action based on your data structure
-        # Your data has action=OPEN/CLOSE and side=buy, so map OPEN->buy, CLOSE->sell
         if "action" in trades.columns:
             trades["unified_action"] = trades["action"].str.upper().map({
                 "OPEN": "buy",
@@ -282,22 +275,13 @@ def load_data(trades_link: str, market_link: str):
         if "asset" in trades.columns: 
             trades["asset"] = trades["asset"].apply(unify_symbol)
         
-        # ======================================================================
-        # MODIFICATION START: Standardize trade timestamps to UTC
-        # ======================================================================
         if 'timestamp' in trades.columns: 
             trades['timestamp'] = pd.to_datetime(trades['timestamp'], errors='coerce')
-            # If timestamp is naive (no timezone), assume it's UTC
             if trades['timestamp'].dt.tz is None:
                 trades['timestamp'] = trades['timestamp'].dt.tz_localize('UTC')
-            # If it has a timezone, convert it to UTC to be safe
             else:
                 trades['timestamp'] = trades['timestamp'].dt.tz_convert('UTC')
-        # ======================================================================
-        # MODIFICATION END
-        # ======================================================================
 
-        # Convert numeric columns
         for col in ["quantity", "price", "usd_value", "p_up", "p_down", "pnl", "pnl_pct"]:
             if col in trades.columns: 
                 trades[col] = pd.to_numeric(trades[col], errors="coerce")
@@ -306,20 +290,12 @@ def load_data(trades_link: str, market_link: str):
         market = lower_strip_cols(market)
         market = market.rename(columns={"product_id": "asset"})
         
-        # ======================================================================
-        # MODIFICATION START: Standardize market timestamps to UTC
-        # ======================================================================
         if 'timestamp' in market.columns: 
             market['timestamp'] = pd.to_datetime(market['timestamp'], errors='coerce')
-            # If timestamp is naive (no timezone), assume it's UTC
             if market['timestamp'].dt.tz is None:
                 market['timestamp'] = market['timestamp'].dt.tz_localize('UTC')
-            # If it has a timezone, convert it to UTC
             else:
                 market['timestamp'] = market['timestamp'].dt.tz_convert('UTC')
-        # ======================================================================
-        # MODIFICATION END
-        # ======================================================================
 
         if 'asset' in market.columns: market["asset"] = market["asset"].apply(unify_symbol)
         market = normalize_prob_columns(market)
@@ -343,7 +319,6 @@ def check_auto_refresh():
     
     return time_since_refresh
 
-# Check auto-refresh at the start
 time_since_refresh = check_auto_refresh()
 
 # =========================
@@ -369,7 +344,6 @@ with st.expander("🔎 Debug — data status"):
 with st.sidebar:
     st.markdown("<h1 style='text-align: center;'>Crypto Strategy</h1>", unsafe_allow_html=True)
     
-    # --- AUTO-REFRESH CONTROLS ---
     col1, col2 = st.columns([2, 2])
     with col1:
         auto_refresh = st.toggle("🔄 Auto-Refresh (5min)", value=st.session_state.auto_refresh_enabled)
@@ -387,7 +361,6 @@ with st.sidebar:
                 st.session_state.clear()
                 st.rerun()
     
-    # Show countdown if auto-refresh is enabled
     if st.session_state.auto_refresh_enabled:
         time_until_refresh = REFRESH_INTERVAL - time_since_refresh
         if time_until_refresh > 0:
@@ -401,24 +374,20 @@ with st.sidebar:
     
     st.markdown("---")
 
-    # --- IMPROVED DATE DISPLAY: Show market data when trade data is old ---
     date_source = "No Data"
     min_date = max_date = None
     
-    # Check trade data first
     if not trades_df.empty and 'timestamp' in trades_df.columns:
         trade_min = trades_df['timestamp'].min()
         trade_max = trades_df['timestamp'].max()
         if pd.notna(trade_min) and pd.notna(trade_max):
-            # Only use trade dates if they span more than 1 day AND are recent
             days_span = (trade_max - trade_min).days
             days_old = (datetime.now(timezone('UTC')) - trade_max).days
             
-            if days_span > 0 and days_old <= 3:  # Recent trade data
+            if days_span > 0 and days_old <= 3:
                 min_date, max_date = trade_min, trade_max
                 date_source = "Trade Data"
     
-    # Fall back to market data if trade data is limited/old
     if min_date is None and not market_df.empty and 'timestamp' in market_df.columns:
         market_min = market_df['timestamp'].min()
         market_max = market_df['timestamp'].max()
@@ -426,9 +395,7 @@ with st.sidebar:
             min_date, max_date = market_min, market_max
             date_source = "Market Data"
     
-    # Display the date range
     if min_date and max_date:
-        # MODIFICATION: Convert to local time for display
         min_date_local = min_date.tz_convert(LOCAL_TZ)
         max_date_local = max_date.tz_convert(LOCAL_TZ)
         st.markdown(f"<p style='text-align: center;'><strong>{min_date_local.strftime('%m/%d/%y')} - {max_date_local.strftime('%m/%d/%y')}</strong></p>", unsafe_allow_html=True)
@@ -436,18 +403,15 @@ with st.sidebar:
     else:
         st.markdown("<p style='text-align: center; color: orange;'>⚠️ No Date Range Available</p>", unsafe_allow_html=True)
 
-    # Show actual data freshness instead of "last updated"
     latest_data_time = None
     data_source_for_time = "No Data"
     
-    # Get the most recent timestamp from either trades or market data
     if not trades_df.empty and 'timestamp' in trades_df.columns:
         latest_trade = trades_df['timestamp'].max()
         if pd.notna(latest_trade):
             latest_data_time = latest_trade
             data_source_for_time = "Latest Trade"
     
-    # Check if market data is more recent
     if not market_df.empty and 'timestamp' in market_df.columns:
         latest_market = market_df['timestamp'].max()
         if pd.notna(latest_market):
@@ -455,16 +419,13 @@ with st.sidebar:
                 latest_data_time = latest_market
                 data_source_for_time = "Latest Market Data"
     
-    # Display the actual latest data timestamp
     if latest_data_time:
-        # MODIFICATION: Convert to local time for display
         latest_data_time_local = latest_data_time.tz_convert(LOCAL_TZ)
         st.markdown(f"<p style='text-align: center; font-size: 0.9em; color: grey;'>{data_source_for_time}: {latest_data_time_local.strftime('%Y-%m-%d %H:%M')}</p>", unsafe_allow_html=True)
     else:
         st.markdown(f"<p style='text-align: center; font-size: 0.9em; color: grey;'>No data timestamps available</p>", unsafe_allow_html=True)
     st.markdown("---")
 
-    # Data status indicators
     col1, col2 = st.columns(2)
     with col1:
         trade_status = "✅" if not trades_df.empty else "⚠️"
@@ -475,13 +436,11 @@ with st.sidebar:
         market_count = len(market_df) if not market_df.empty else 0
         st.markdown(f"{market_status} **Market:** {market_count:,}")
     
-    # Show asset count
     if not market_df.empty and "asset" in market_df.columns:
         asset_count = market_df["asset"].nunique()
         st.markdown(f"📊 **Assets:** {asset_count}")
     
     st.markdown("---")
-
     st.markdown("## 📊 Strategy Stats")
     if summary_stats:
         col1, col2 = st.columns(2)
@@ -494,7 +453,6 @@ with st.sidebar:
             st.metric("Avg Win ($)", f"${summary_stats.get('avg_win', 0):.2f}")
 
     st.markdown("---")
-
     st.markdown("## 💵 Realized P&L")
     if pnl_summary:
         total_pnl = sum(pnl for pnl in pnl_summary.values() if pd.notna(pnl))
@@ -573,7 +531,6 @@ with tab1:
                     recent_data = df_sorted.tail(10)
                     st.write("**Last 10 Timestamps:**")
                     for ts in recent_data['timestamp']:
-                        # MODIFICATION: Convert to local time for display
                         ts_local = ts.tz_convert(LOCAL_TZ)
                         st.write(f"• {ts_local.strftime('%m/%d %H:%M:%S')}")
 
@@ -590,6 +547,13 @@ with tab1:
             else: start_date = df["timestamp"].min()
             vis = df[(df["timestamp"] >= start_date) & (df["timestamp"] <= end_date)].copy()
             if not vis.empty:
+                
+                # ======================================================================
+                # FINAL FIX: Convert data to local timezone FOR PLOTTING ONLY
+                # ======================================================================
+                vis['timestamp'] = vis['timestamp'].dt.tz_convert(LOCAL_TZ)
+                # ======================================================================
+                
                 start_date_local = start_date.tz_convert(LOCAL_TZ)
                 end_date_local = end_date.tz_convert(LOCAL_TZ)
                 st.info(f"Showing {len(vis):,} candles from {start_date_local.strftime('%Y-%m-%d %H:%M')} to {end_date_local.strftime('%Y-%m-%d %H:%M')}")
@@ -605,8 +569,12 @@ with tab1:
                         fig.add_trace(go.Scatter(x=prob_data["timestamp"], y=prob_data["close"], mode='markers', marker=dict(size=prob_data['signal_strength'] / 5 + 3, color=colors, opacity=0.7, line=dict(width=1, color='white')), name='ML Signals', customdata=list(zip(prob_data['p_up'], prob_data['p_down'], prob_data['confidence'])), hovertemplate='<b>ML Signal</b><br>Time: %{x}<br>Price: $%{y:.6f}<br>P(Up): %{customdata[0]:.3f}<br>P(Down): %{customdata[1]:.3f}<br>Confidence: %{customdata[2]:.3f}<extra></extra>'))
                 if not trades_df.empty:
                     asset_trades = trades_df[(trades_df["asset"] == selected_asset) & (trades_df["timestamp"] >= start_date) & (trades_df["timestamp"] <= end_date)].copy()
+                    
+                    # Also convert this slice for plotting
                     if not asset_trades.empty:
-                        # Use unified_action for consistent buy/sell detection
+                        asset_trades['timestamp'] = asset_trades['timestamp'].dt.tz_convert(LOCAL_TZ)
+                    
+                    if not asset_trades.empty:
                         buy_trades = asset_trades[asset_trades["unified_action"].str.lower().isin(["buy", "open"])]
                         if not buy_trades.empty:
                             fig.add_trace(go.Scatter(x=buy_trades["timestamp"], y=buy_trades["price"], mode="markers+text", name="BUY", marker=dict(symbol='triangle-up', size=16, color='#4caf50', line=dict(width=2, color='white')), text=['▲'] * len(buy_trades), textposition="top center", textfont=dict(size=12, color='#4caf50'), customdata=buy_trades.get('reason', ''), hovertemplate='<b>BUY ORDER</b><br>Time: %{x}<br>Price: $%{y:.6f}<br>Reason: %{customdata}<extra></extra>'))
@@ -632,10 +600,9 @@ with tab1:
                 else: tick_format = '%m/%d'; dtick = None
                 price_range = vis['high'].max() - vis['low'].min()
                 y_padding = price_range * 0.05
-                fig.update_layout(title=f"{selected_asset} — Minute-Level Price & ML Signals ({range_choice})", template="plotly_white", xaxis_rangeslider_visible=False, xaxis=dict(title="Time", type='date', tickformat=tick_format, dtick=dtick, showgrid=True, gridcolor='rgba(128,128,128,0.1)', tickangle=45 if range_choice in ["4 hours", "12 hours", "1 day"] else 0), yaxis=dict(title="Price (USD)", tickformat='.6f' if vis['close'].iloc[-1] < 1 else '.4f', showgrid=True, gridcolor='rgba(128,128,128,0.1)', range=[vis['low'].min() - y_padding, vis['high'].max() + y_padding]), hovermode="x unified", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), height=750, margin=dict(l=60, r=20, t=80, b=80), plot_bgcolor='rgba(250,250,250,0.8)')
+                fig.update_layout(title=f"{selected_asset} — Minute-Level Price & ML Signals ({range_choice})", template="plotly_white", xaxis_rangeslider_visible=False, xaxis=dict(title=f"Time ({LOCAL_TZ})", type='date', tickformat=tick_format, dtick=dtick, showgrid=True, gridcolor='rgba(128,128,128,0.1)', tickangle=45 if range_choice in ["4 hours", "12 hours", "1 day"] else 0), yaxis=dict(title="Price (USD)", tickformat='.6f' if vis['close'].iloc[-1] < 1 else '.4f', showgrid=True, gridcolor='rgba(128,128,128,0.1)', range=[vis['low'].min() - y_padding, vis['high'].max() + y_padding]), hovermode="x unified", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), height=750, margin=dict(l=60, r=20, t=80, b=80), plot_bgcolor='rgba(250,250,250,0.8)')
                 st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True, 'modeBarButtonsToAdd': ['drawline', 'drawopenpath', 'drawclosedpath'], 'scrollZoom': True})
                 
-                # Show trade statistics if trades exist for this asset
                 asset_trades = trades_df[(trades_df["asset"] == selected_asset) & (trades_df["timestamp"] >= start_date) & (trades_df["timestamp"] <= end_date)].copy() if not trades_df.empty else pd.DataFrame()
                 if not asset_trades.empty:
                     col1, col2, col3, col4, col5 = st.columns(5)
@@ -686,39 +653,32 @@ with tab3:
     if not trades_df.empty:
         st.markdown("### Complete Trade Log")
         
-        # Debug info first
         st.write("Debug - Available columns:", list(trades_df.columns))
         
         display_df = trades_df.copy()
         
-        # Create Time column first and ensure it works
         if "timestamp" in display_df.columns:
             display_df["timestamp"] = pd.to_datetime(display_df["timestamp"], errors="coerce")
-            # MODIFICATION: Convert to local time for display
             display_df["Time"] = display_df["timestamp"].dt.tz_convert(LOCAL_TZ).strftime("%Y-%m-%d %H:%M:%S")
             st.write("Debug - Time column sample:", display_df["Time"].iloc[0] if len(display_df) > 0 else "No data")
         else:
             st.warning("No timestamp column found in trades data")
         
-        # Select columns for display - put Time first
         display_columns = []
         if "Time" in display_df.columns:
             display_columns.append("Time")
         
-        # Add other important columns
         other_cols = ["asset", "action", "side", "unified_action", "quantity", "price", "usd_value", "reason", "pnl", "pnl_pct"]
         for col in other_cols:
             if col in display_df.columns:
                 display_columns.append(col)
         
-        # Add remaining columns except timestamp
         for col in display_df.columns:
             if col not in display_columns and col != "timestamp":
                 display_columns.append(col)
         
         display_df = display_df[display_columns]
         
-        # Rename columns
         column_renames = {
             "asset": "Asset",
             "action": "Action",
@@ -736,13 +696,11 @@ with tab3:
             if old_col in display_df.columns:
                 display_df = display_df.rename(columns={old_col: new_col})
         
-        # Sort by time
         if "Time" in display_df.columns:
             display_df = display_df.sort_values("Time", ascending=False)
             
         st.dataframe(display_df, use_container_width=True)
         
-        # Show timing debug
         if not display_df.empty and "Time" in display_df.columns:
             latest_trade_time_str = display_df["Time"].iloc[0]
             current_time_local = datetime.now(timezone(LOCAL_TZ)).strftime("%Y-%m-%d %H:%M:%S")
@@ -756,5 +714,5 @@ with tab3:
 # Trigger auto-refresh check at the end 
 # =========================
 if st.session_state.auto_refresh_enabled:
-    time.sleep(5)  # Wait 5 seconds before checking again
+    time.sleep(5)
     st.rerun()
