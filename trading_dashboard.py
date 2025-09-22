@@ -220,7 +220,8 @@ def match_trades_fifo(trades_df: pd.DataFrame):
     open_df = pd.DataFrame(open_positions) if open_positions else pd.DataFrame()
 
     if not matched_df.empty:
-        matched_df['P&L %'] = (matched_df['P&L ($)'] / (matched_df['Buy Price'] * matched_df['Quantity'])) * 100
+        buy_cost = matched_df['Buy Price'] * matched_df['Quantity']
+        matched_df['P&L %'] = np.where(buy_cost > 1e-9, (matched_df['P&L ($)'] / buy_cost) * 100, 0)
         matched_df = matched_df.sort_values("Sell Time", ascending=False)
         
     if not open_df.empty:
@@ -347,12 +348,13 @@ def load_data(trades_link: str, market_link: str):
     return trades_with_pnl, pnl_summary, stats, market
 
 # =========================
-# Auto-Refresh Logic & Main App Setup
+# Main App & Sidebar
 # =========================
 check_auto_refresh()
 st.markdown("## Crypto Trading Strategy")
 st.caption("ML Signals with Price-Based Exit Logic")
 trades_df, pnl_summary, summary_stats, market_df = load_data(TRADES_LINK, MARKET_LINK)
+
 with st.expander("🔎 Debug — data status"):
     st.write({
         "trades_shape": tuple(trades_df.shape) if isinstance(trades_df, pd.DataFrame) else None,
@@ -362,9 +364,6 @@ with st.expander("🔎 Debug — data status"):
         "assets_sample": sorted(market_df["asset"].dropna().unique())[:10] if not market_df.empty and "asset" in market_df.columns else [],
     })
 
-# =========================
-# SIDEBAR
-# =========================
 with st.sidebar:
     st.markdown("<h1 style='text-align: center;'>Crypto Strategy</h1>", unsafe_allow_html=True)
     
@@ -698,13 +697,100 @@ with tab1:
                 )
                 st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True, 'modeBarButtonsToAdd': ['drawline', 'drawopenpath', 'drawclosedpath'], 'scrollZoom': True})
                 
-                # ... (rest of tab1 code remains the same)
+                asset_trades = trades_df[(trades_df["asset"] == selected_asset) & (trades_df["timestamp"] >= start_date) & (trades_df["timestamp"] <= end_date)].copy() if not trades_df.empty else pd.DataFrame()
+                if not asset_trades.empty:
+                    col1, col2, col3, col4, col5 = st.columns(5)
+                    with col1: st.metric("Total Trades", len(asset_trades))
+                    with col2: 
+                        buy_count = len(asset_trades[asset_trades["unified_action"].str.lower().isin(["buy", "open"])])
+                        st.metric("Buy Orders", buy_count)
+                    with col3: 
+                        sell_count = len(asset_trades[asset_trades["unified_action"].str.lower().isin(["sell", "close"])])
+                        st.metric("Sell Orders", sell_count)
+                    with col4:
+                        if 'pnl' in asset_trades.columns: 
+                            period_pnl = asset_trades['pnl'].sum()
+                            st.metric("Period P&L", f"${period_pnl:.6f}")
+                    with col5:
+                        if len(asset_trades) >= 2: 
+                            time_span = asset_trades['timestamp'].max() - asset_trades['timestamp'].min()
+                            st.metric("Trading Span", f"{time_span}")
+                if 'p_up' in vis.columns and 'p_down' in vis.columns:
+                    st.markdown("---")
+                    st.markdown("### 🤖 ML Signal Analysis")
+                    prob_data = vis.dropna(subset=['p_up', 'p_down'])
+                    if not prob_data.empty:
+                        col1, col2, col3, col4 = st.columns(4)
+                        with col1: bullish_signals = len(prob_data[prob_data['p_up'] > prob_data['p_down']]); st.metric("Bullish Signals", f"{bullish_signals} ({bullish_signals/len(prob_data)*100:.1f}%)")
+                        with col2: bearish_signals = len(prob_data[prob_data['p_down'] > prob_data['p_up']]); st.metric("Bearish Signals", f"{bearish_signals} ({bearish_signals/len(prob_data)*100:.1f}%)")
+                        with col3: avg_confidence = abs(prob_data['p_up'] - prob_data['p_down']).mean(); st.metric("Avg Confidence", f"{avg_confidence:.3f}")
+                        with col4: high_conf_signals = len(prob_data[abs(prob_data['p_up'] - prob_data['p_down']) > 0.1]); st.metric("High Confidence", f"{high_conf_signals} (>10%)")
+            else:
+                st.warning(f"No data for {selected_asset} in the selected date range of {range_choice}.")
+        else:
+            st.warning(f"No market data found for {selected_asset}.")
+    else:
+        st.warning("Market data not loaded or available.")
 
 with tab2:
-    # (Code remains the same)
+    if not trades_df.empty and "timestamp" in trades_df.columns and "cumulative_pnl" in trades_df.columns:
+        st.markdown("### Strategy Performance Analysis")
+        fig_pnl = go.Figure()
+        fig_pnl.add_trace(go.Scatter(x=trades_df["timestamp"], y=trades_df["cumulative_pnl"], mode="lines", name="Cumulative P&L", line=dict(color="blue", width=2)))
+        fig_pnl.add_hline(y=0, line_dash="dash", line_color="gray", annotation_text="Break Even")
+        fig_pnl.update_layout(title="Total Portfolio P&L", template="plotly_white", yaxis_title="P&L (USD)", xaxis_title="Date", hovermode="x unified")
+        st.plotly_chart(fig_pnl, use_container_width=True)
+    else:
+        st.warning("No trade data loaded to analyze P&L.")
 
 with tab3:
-    # (Code remains the same)
+    st.markdown("### Trade History")
+    if not trades_df.empty:
+        matched_df, open_df = match_trades_fifo(trades_df)
+        
+        st.markdown("#### Completed Trades (FIFO)")
+        if not matched_df.empty:
+            display_matched = matched_df.copy()
+            display_matched['Buy Time'] = display_matched['Buy Time'].dt.tz_convert(LOCAL_TZ).dt.strftime('%Y-%m-%d %H:%M:%S')
+            display_matched['Sell Time'] = display_matched['Sell Time'].dt.tz_convert(LOCAL_TZ).dt.strftime('%Y-%m-%d %H:%M:%S')
+            display_matched['Hold Time'] = display_matched['Hold Time'].apply(lambda x: str(x).split('days')[-1].strip().split('.')[0])
+
+            st.dataframe(display_matched[['Asset', 'Quantity', 'Buy Time', 'Buy Price', 'Sell Time', 'Sell Price', 'Hold Time', 'P&L ($)', 'P&L %']],
+                column_config={
+                    "Asset": st.column_config.TextColumn(width="small"),
+                    "Quantity": st.column_config.NumberColumn(format="%.4f", width="small"),
+                    "Buy Price": st.column_config.NumberColumn(format="$%.8f"),
+                    "Sell Price": st.column_config.NumberColumn(format="$%.8f"),
+                    "P&L ($)": st.column_config.NumberColumn(format="$%.2f"),
+                    "P&L %": st.column_config.NumberColumn(format="%.2f%%"),
+                },
+                use_container_width=True, hide_index=True
+            )
+        else:
+            st.info("No completed (buy/sell) trades found.")
+
+        st.markdown("---")
+        st.markdown("#### Open Positions")
+        if not open_df.empty:
+            display_open = open_df[['timestamp', 'asset', 'quantity', 'price', 'reason']].copy()
+            display_open['Time'] = display_open['timestamp'].dt.tz_convert(LOCAL_TZ).dt.strftime('%Y-%m-%d %H:%M:%S')
+            display_open = display_open.rename(columns={
+                'asset': 'Asset', 'quantity': 'Quantity', 'price': 'Price', 'reason': 'Reason'
+            })
+            
+            st.dataframe(display_open[['Time', 'Asset', 'Quantity', 'Price', 'Reason']], 
+                column_config={
+                    "Asset": st.column_config.TextColumn(width="small"),
+                    "Quantity": st.column_config.NumberColumn(format="%.4f", width="small"),
+                    "Price": st.column_config.NumberColumn(format="$%.8f"),
+                },
+                use_container_width=True, hide_index=True
+            )
+        else:
+            st.info("No open positions.")
+            
+    else:
+        st.warning("No trade history to display.")
 
 # =========================
 # Trigger auto-refresh check at the end 
