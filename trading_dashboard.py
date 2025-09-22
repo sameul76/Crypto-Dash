@@ -243,9 +243,19 @@ def _read_parquet_bytes(b: bytes, label: str) -> pd.DataFrame:
 
 @st.cache_data(ttl=600)
 def load_data(trades_link: str, market_link: str):
+    # ======================================================================
+    # FIX: Initialize DataFrames to prevent UnboundLocalError
+    # ======================================================================
+    trades = pd.DataFrame()
+    market = pd.DataFrame()
+
     raw_trades = download_drive_file_bytes(trades_link)
-    trades = _read_parquet_bytes(raw_trades, "Trades")
+    if raw_trades:
+        trades = _read_parquet_bytes(raw_trades, "Trades")
+
     raw_market = download_drive_file_bytes(market_link)
+    if raw_market:
+        market = _read_parquet_bytes(raw_market, "Market")
     
     if not trades.empty:
         trades = lower_strip_cols(trades)
@@ -548,12 +558,6 @@ with tab1:
             vis = df[(df["timestamp"] >= start_date) & (df["timestamp"] <= end_date)].copy()
             if not vis.empty:
                 
-                # ======================================================================
-                # FINAL FIX: Convert data to local timezone FOR PLOTTING ONLY
-                # ======================================================================
-                vis['timestamp'] = vis['timestamp'].dt.tz_convert(LOCAL_TZ)
-                # ======================================================================
-                
                 start_date_local = start_date.tz_convert(LOCAL_TZ)
                 end_date_local = end_date.tz_convert(LOCAL_TZ)
                 st.info(f"Showing {len(vis):,} candles from {start_date_local.strftime('%Y-%m-%d %H:%M')} to {end_date_local.strftime('%Y-%m-%d %H:%M')}")
@@ -569,10 +573,6 @@ with tab1:
                         fig.add_trace(go.Scatter(x=prob_data["timestamp"], y=prob_data["close"], mode='markers', marker=dict(size=prob_data['signal_strength'] / 5 + 3, color=colors, opacity=0.7, line=dict(width=1, color='white')), name='ML Signals', customdata=list(zip(prob_data['p_up'], prob_data['p_down'], prob_data['confidence'])), hovertemplate='<b>ML Signal</b><br>Time: %{x}<br>Price: $%{y:.6f}<br>P(Up): %{customdata[0]:.3f}<br>P(Down): %{customdata[1]:.3f}<br>Confidence: %{customdata[2]:.3f}<extra></extra>'))
                 if not trades_df.empty:
                     asset_trades = trades_df[(trades_df["asset"] == selected_asset) & (trades_df["timestamp"] >= start_date) & (trades_df["timestamp"] <= end_date)].copy()
-                    
-                    # Also convert this slice for plotting
-                    if not asset_trades.empty:
-                        asset_trades['timestamp'] = asset_trades['timestamp'].dt.tz_convert(LOCAL_TZ)
                     
                     if not asset_trades.empty:
                         buy_trades = asset_trades[asset_trades["unified_action"].str.lower().isin(["buy", "open"])]
