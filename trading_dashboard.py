@@ -279,11 +279,17 @@ def load_data(trades_link: str, market_link: str):
         
         trades = trades.rename(columns=column_mapping)
         
-        # Create a unified action column for buy/sell logic
-        if "trade_direction" in trades.columns:
+        # FIXED: Create unified_action based on your data structure
+        # Your data has action=OPEN/CLOSE and side=buy, so map OPEN->buy, CLOSE->sell
+        if "action" in trades.columns:
+            trades["unified_action"] = trades["action"].str.upper().map({
+                "OPEN": "buy",
+                "CLOSE": "sell"
+            }).fillna(trades["action"].str.lower())
+        elif "trade_direction" in trades.columns:
             trades["unified_action"] = trades["trade_direction"]
-        elif "action" in trades.columns:
-            trades["unified_action"] = trades["action"]
+        elif "side" in trades.columns:
+            trades["unified_action"] = trades["side"]
         else:
             trades["unified_action"] = "unknown"
         
@@ -641,61 +647,68 @@ with tab3:
     if not trades_df.empty:
         st.markdown("### Complete Trade Log")
         
-        # Get available columns from your trade file, avoiding duplicates
-        available_cols = []
-        priority_cols = ["timestamp", "asset", "unified_action", "action", "trade_direction", "quantity", "price", "usd_value", "reason", "p_up", "p_down", "pnl", "pnl_pct", "confidence", "take_profit", "stop_loss", "trading_mode"]
+        # Debug info first
+        st.write("Debug - Available columns:", list(trades_df.columns))
         
-        # Add columns in priority order, avoiding duplicates
-        for col in priority_cols:
-            if col in trades_df.columns and col not in available_cols:
-                available_cols.append(col)
+        display_df = trades_df.copy()
         
-        # Add any remaining columns
-        for col in trades_df.columns:
-            if col not in available_cols:
-                available_cols.append(col)
-        
-        display_df = trades_df[available_cols].copy()
-        
-        # Handle timestamp
+        # Create Time column first and ensure it works
         if "timestamp" in display_df.columns:
             display_df["timestamp"] = pd.to_datetime(display_df["timestamp"], errors="coerce")
             display_df["Time"] = display_df["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S")
-            display_df.drop(columns=["timestamp"], inplace=True)
+            st.write("Debug - Time column sample:", display_df["Time"].iloc[0] if len(display_df) > 0 else "No data")
+        else:
+            st.warning("No timestamp column found in trades data")
         
-        # Create a safe rename dictionary that only renames existing columns
-        rename_dict = {}
+        # Select columns for display - put Time first
+        display_columns = []
+        if "Time" in display_df.columns:
+            display_columns.append("Time")
+        
+        # Add other important columns
+        other_cols = ["asset", "action", "side", "unified_action", "quantity", "price", "usd_value", "reason", "pnl", "pnl_pct"]
+        for col in other_cols:
+            if col in display_df.columns:
+                display_columns.append(col)
+        
+        # Add remaining columns except timestamp
+        for col in display_df.columns:
+            if col not in display_columns and col != "timestamp":
+                display_columns.append(col)
+        
+        display_df = display_df[display_columns]
+        
+        # Rename columns
         column_renames = {
             "asset": "Asset",
-            "unified_action": "Direction", 
             "action": "Action",
-            "trade_direction": "Side",
+            "side": "Side",
+            "unified_action": "Direction", 
             "quantity": "Quantity",
             "price": "Price", 
             "usd_value": "USD Value",
             "reason": "Reason",
-            "p_up": "P(Up)",
-            "p_down": "P(Down)",
             "pnl": "P&L ($)",
-            "pnl_pct": "P&L %",
-            "confidence": "Confidence",
-            "take_profit": "Take Profit",
-            "stop_loss": "Stop Loss",
-            "trading_mode": "Mode"
+            "pnl_pct": "P&L %"
         }
         
-        # Only add to rename_dict if column exists and target name doesn't already exist
-        for old_name, new_name in column_renames.items():
-            if old_name in display_df.columns and new_name not in display_df.columns:
-                rename_dict[old_name] = new_name
+        for old_col, new_col in column_renames.items():
+            if old_col in display_df.columns:
+                display_df = display_df.rename(columns={old_col: new_col})
         
-        if rename_dict:
-            display_df.rename(columns=rename_dict, inplace=True)
-        
+        # Sort by time
         if "Time" in display_df.columns:
             display_df = display_df.sort_values("Time", ascending=False)
             
         st.dataframe(display_df, use_container_width=True)
+        
+        # Show timing debug
+        if not display_df.empty and "Time" in display_df.columns:
+            latest_trade_time = display_df["Time"].iloc[0]
+            current_time = datetime.now(timezone(LOCAL_TZ)).strftime("%Y-%m-%d %H:%M:%S")
+            st.write(f"Latest trade: {latest_trade_time}")
+            st.write(f"Current time: {current_time}")
+            
     else:
         st.warning("No trade history to display.")
 
