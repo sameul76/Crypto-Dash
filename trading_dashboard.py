@@ -624,23 +624,7 @@ with tab1:
                     x=vis["timestamp"], open=vis["open"], high=vis["high"], low=vis["low"], close=vis["close"], name=selected_asset, 
                     increasing_line_color='#26a69a', decreasing_line_color='#ef5350', 
                     increasing_fillcolor='rgba(38, 166, 154, 0.5)', decreasing_fillcolor='rgba(239, 83, 80, 0.5)', 
-                    line=dict(width=1), hoverinfo='none' 
-                ))
-                
-                price_format = ".8f" if vis['close'].iloc[-1] < 0.001 else ".6f" if vis['close'].iloc[-1] < 1 else ".4f"
-                hover_template = (
-                    '<b>Time: %{x|%Y-%m-%d %H:%M}</b><br><br>' +
-                    'Open: %{customdata[0]:' + price_format + '}<br>' +
-                    'High: %{customdata[1]:' + price_format + '}<br>' +
-                    'Low: %{customdata[2]:' + price_format + '}<br>' +
-                    'Close: %{customdata[3]:' + price_format + '}<extra></extra>'
-                )
-
-                fig.add_trace(go.Scatter(
-                    x=vis['timestamp'], y=vis['high'], mode='markers',
-                    marker=dict(color='rgba(0,0,0,0)', size=0),
-                    customdata=vis[['open', 'high', 'low', 'close']],
-                    hovertemplate=hover_template, name='OHLC', showlegend=False
+                    line=dict(width=1)
                 ))
 
                 if 'p_up' in vis.columns and 'p_down' in vis.columns:
