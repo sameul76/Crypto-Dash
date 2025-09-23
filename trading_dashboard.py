@@ -132,9 +132,9 @@ def calculate_pnl_and_metrics(trades_df: pd.DataFrame):
         "avg_loss": (gl / loss) if loss else 0,
         "max_drawdown": mdd,
     }
-    # Fix for TypeError: Use apply with a lambda function for cumsum on Decimal objects
+    # Fix for TypeError: Use transform to preserve index alignment with Decimal objects
     if not df.empty and 'pnl' in df.columns:
-        df["asset_cumulative_pnl"] = df.groupby("asset")["pnl"].apply(lambda x: x.cumsum())
+        df["asset_cumulative_pnl"] = df.groupby("asset")["pnl"].transform(lambda x: x.cumsum())
     
     return pnl_per_asset, df, stats
 
