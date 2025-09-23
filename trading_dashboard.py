@@ -663,12 +663,7 @@ with tab1:
                         if not sell_trades.empty:
                             fig.add_trace(go.Scatter(x=sell_trades["timestamp"], y=sell_trades["price"], mode="markers+text", name="SELL", marker=dict(symbol='triangle-down', size=16, color='#f44336', line=dict(width=2, color='white')), text=['▼'] * len(sell_trades), textposition="bottom center", textfont=dict(size=12, color='#f44336'), customdata=sell_trades.get('reason', ''), hovertemplate='<b>SELL ORDER</b><br>Time: %{x|%Y-%m-%d %H:%M}<br>Price: $%{y:.6f}<br>Reason: %{customdata}<extra></extra>'))
                         
-                        # Add trade markers at the bottom of the chart
-                        y_position = vis['low'].min() - (vis['high'].max() - vis['low'].min()) * 0.02
-                        if not buy_trades.empty:
-                            fig.add_trace(go.Scatter(x=buy_trades["timestamp"], y=[y_position] * len(buy_trades),mode="markers", name="Buy Signal (Bottom)", marker=dict(symbol='triangle-up', size=8, color='#4caf50', line=dict(width=1, color='white')), showlegend=False, hovertemplate='<b>BUY</b><br>Time: %{x|%Y-%m-%d %H:%M}<extra></extra>'))
-                        if not sell_trades.empty:
-                             fig.add_trace(go.Scatter(x=sell_trades["timestamp"], y=[y_position] * len(sell_trades),mode="markers", name="Sell Signal (Bottom)", marker=dict(symbol='triangle-down', size=8, color='#f44336', line=dict(width=1, color='white')), showlegend=False, hovertemplate='<b>SELL</b><br>Time: %{x|%Y-%m-%d %H:%M}<extra></extra>'))
+
 
                         sorted_trades = asset_trades.sort_values("timestamp")
                         open_trades = []
@@ -813,9 +808,4 @@ with tab3:
     else:
         st.warning("No trade history to display.")
 
-# =========================
-# Trigger auto-refresh check at the end 
-# =========================
-if st.session_state.get('auto_refresh_enabled', True):
-    time.sleep(1)
-    st.rerun()
+# Auto-refresh is handled by the check_auto_refresh() function at the top
