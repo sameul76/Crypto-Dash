@@ -7,7 +7,11 @@ import numpy as np
 import plotly.graph_objects as go
 import time
 from datetime import datetime, timedelta
-import pytz # Added for timezone conversion
+import pytz
+from decimal import Decimal, getcontext
+
+# Set precision for Decimal calculations
+getcontext().prec = 30
 
 # Note: Reading Parquet files with pandas requires the 'pyarrow' and 'pytz' libraries.
 # pip install streamlit pandas plotly pyarrow requests pytz
@@ -78,31 +82,28 @@ def calculate_pnl_and_metrics(trades_df: pd.DataFrame):
     df = trades_df.copy()
     df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
     df = df.sort_values("timestamp").reset_index(drop=True)
-    df["pnl"], df["cumulative_pnl"] = 0.0, 0.0
-    total, win, loss, gp, gl, peak, mdd = 0.0, 0, 0, 0.0, 0.0, 0.0, 0.0
+    df["pnl"], df["cumulative_pnl"] = Decimal(0), Decimal(0)
+    total, win, loss, gp, gl, peak, mdd = Decimal(0), 0, 0, Decimal(0), Decimal(0), Decimal(0), Decimal(0)
     
     for i, row in df.iterrows():
         asset = row.get("asset", "")
         action = str(row.get("unified_action", "")).lower().strip()
         
-        try:
-            price = float(row.get("price", 0))
-            qty = float(row.get("quantity", 0))
-        except (ValueError, TypeError):
-            price, qty = 0.0, 0.0
+        price = row.get("price", Decimal(0))
+        qty = row.get("quantity", Decimal(0))
             
         if asset not in positions:
-            positions[asset] = {"quantity": 0.0, "cost": 0.0}
-            pnl_per_asset[asset] = 0.0
+            positions[asset] = {"quantity": Decimal(0), "cost": Decimal(0)}
+            pnl_per_asset[asset] = Decimal(0)
             
-        cur_pnl = 0.0
+        cur_pnl = Decimal(0)
         
         if action in ["buy", "open"]:
             positions[asset]["cost"] += qty * price
             positions[asset]["quantity"] += qty
         elif action in ["sell", "close"]:
             if positions[asset]["quantity"] > 0:
-                avg_cost = positions[asset]["cost"] / max(positions[asset]["quantity"], 1e-12)
+                avg_cost = positions[asset]["cost"] / max(positions[asset]["quantity"], Decimal("1e-12"))
                 trade_qty = min(qty, positions[asset]["quantity"])
                 realized_pnl = (price - avg_cost) * trade_qty
                 pnl_per_asset[asset] += realized_pnl
@@ -141,38 +142,36 @@ def calculate_open_positions(trades_df: pd.DataFrame, market_df: pd.DataFrame) -
     for _, row in trades_df.sort_values("timestamp").iterrows():
         asset = row.get("asset", "")
         action = str(row.get("unified_action", "")).lower().strip()
-        try:
-            qty = float(row.get("quantity", 0.0))
-            price = float(row.get("price", 0.0))
-        except (ValueError, TypeError):
-            qty, price = 0.0, 0.0
+        
+        qty = row.get("quantity", Decimal(0))
+        price = row.get("price", Decimal(0))
             
         if asset not in positions:
-            positions[asset] = {"quantity": 0.0, "cost": 0.0}
+            positions[asset] = {"quantity": Decimal(0), "cost": Decimal(0)}
             
         if action in ["buy", "open"]:
             positions[asset]["cost"] += qty * price
             positions[asset]["quantity"] += qty
         elif action in ["sell", "close"]:
             if positions[asset]["quantity"] > 0:
-                avg_cost = positions[asset]["cost"] / max(positions[asset]["quantity"], 1e-12)
+                avg_cost = positions[asset]["cost"] / max(positions[asset]["quantity"], Decimal("1e-12"))
                 sell_qty = min(qty, positions[asset]["quantity"])
                 positions[asset]["cost"] -= avg_cost * sell_qty
                 positions[asset]["quantity"] -= sell_qty
                 
     open_positions = []
     for asset, data in positions.items():
-        if data["quantity"] > 1e-9:
+        if data["quantity"] > Decimal("1e-9"):
             latest_market = market_df[market_df['asset'] == asset]
             if not latest_market.empty:
-                latest_price = latest_market.loc[latest_market['timestamp'].idxmax()]['close']
+                latest_price = Decimal(str(latest_market.loc[latest_market['timestamp'].idxmax()]['close']))
                 avg_entry = data["cost"] / data["quantity"]
                 current_value = latest_price * data["quantity"]
                 unrealized_pnl = current_value - data["cost"]
                 open_positions.append({
-                    "Asset": asset, "Quantity": data["quantity"], "Avg. Entry Price": avg_entry,
-                    "Current Price": latest_price, "Current Value ($)": current_value,
-                    "Unrealized P&L ($)": unrealized_pnl,
+                    "Asset": asset, "Quantity": float(data["quantity"]), "Avg. Entry Price": float(avg_entry),
+                    "Current Price": float(latest_price), "Current Value ($)": float(current_value),
+                    "Unrealized P&L ($)": float(unrealized_pnl),
                 })
     return pd.DataFrame(open_positions)
 
@@ -188,17 +187,14 @@ def match_trades_fifo(trades_df: pd.DataFrame):
         sells = [row.to_dict() for _, row in group[group['unified_action'].isin(['sell', 'close'])].sort_values('timestamp').iterrows()]
 
         for sell in sells:
-            sell_qty_remaining = sell.get('quantity', 0)
+            sell_qty_remaining = sell.get('quantity', Decimal(0))
             
-            while sell_qty_remaining > 1e-9 and buys:
-                # FIFO Fix: Ensure the buy occurred before the sell.
+            while sell_qty_remaining > Decimal("1e-9") and buys:
                 if buys[0]['timestamp'] >= sell['timestamp']:
-                    # This sell cannot be matched with the earliest available buy,
-                    # so we move on to the next sell.
                     break
 
                 buy = buys[0]
-                buy_qty_remaining = buy.get('quantity', 0)
+                buy_qty_remaining = buy.get('quantity', Decimal(0))
                 trade_qty = min(sell_qty_remaining, buy_qty_remaining)
 
                 if trade_qty > 0:
@@ -216,7 +212,7 @@ def match_trades_fifo(trades_df: pd.DataFrame):
                     sell_qty_remaining -= trade_qty
                     buys[0]['quantity'] -= trade_qty
 
-                    if buys[0]['quantity'] < 1e-9:
+                    if buys[0]['quantity'] < Decimal("1e-9"):
                         buys.pop(0)
             
         open_positions.extend(buys)
@@ -226,7 +222,13 @@ def match_trades_fifo(trades_df: pd.DataFrame):
 
     if not matched_df.empty:
         buy_cost = matched_df['Buy Price'] * matched_df['Quantity']
-        matched_df['P&L %'] = np.where(buy_cost > 1e-9, (matched_df['P&L ($)'] / buy_cost) * 100, 0)
+        # Use a small non-zero value for division check to avoid errors with Decimal
+        is_buy_cost_zero = buy_cost < Decimal("1e-18")
+        matched_df['P&L %'] = 100 * np.where(
+            is_buy_cost_zero, 
+            0, 
+            matched_df['P&L ($)'] / buy_cost
+        )
         matched_df = matched_df.sort_values("Sell Time", ascending=False)
         
     if not open_df.empty:
@@ -281,7 +283,7 @@ def _read_parquet_bytes(b: bytes, label: str) -> pd.DataFrame:
         st.error(f"{label}: failed to read Parquet: {e}")
         return pd.DataFrame()
 
-@st.cache_data(ttl=60)  # Reduced cache time for debugging
+@st.cache_data(ttl=60)
 def load_data(trades_link: str, market_link: str):
     trades = pd.DataFrame()
     market = pd.DataFrame()
@@ -299,47 +301,34 @@ def load_data(trades_link: str, market_link: str):
         
         column_mapping = {}
         if "value" in trades.columns: column_mapping["value"] = "usd_value"
-        
         if "side" in trades.columns and "action" in trades.columns:
             column_mapping["side"] = "trade_direction" 
         elif "side" in trades.columns and "action" not in trades.columns:
             column_mapping["side"] = "action"
-        
         trades = trades.rename(columns=column_mapping)
         
         if "action" in trades.columns:
-            trades["unified_action"] = trades["action"].str.upper().map({
-                "OPEN": "buy",
-                "CLOSE": "sell"
-            }).fillna(trades["action"].str.lower())
-        elif "trade_direction" in trades.columns:
-            trades["unified_action"] = trades["trade_direction"]
-        elif "side" in trades.columns:
-            trades["unified_action"] = trades["side"]
-        else:
-            trades["unified_action"] = "unknown"
+            trades["unified_action"] = trades["action"].str.upper().map({"OPEN": "buy", "CLOSE": "sell"}).fillna(trades["action"].str.lower())
+        elif "trade_direction" in trades.columns: trades["unified_action"] = trades["trade_direction"]
+        elif "side" in trades.columns: trades["unified_action"] = trades["side"]
+        else: trades["unified_action"] = "unknown"
         
-        if "asset" in trades.columns: 
-            trades["asset"] = trades["asset"].apply(unify_symbol)
-        
-        # Simple timestamp conversion - no timezone handling
-        if 'timestamp' in trades.columns: 
-            trades['timestamp'] = pd.to_datetime(trades['timestamp'], errors='coerce')
+        if "asset" in trades.columns: trades["asset"] = trades["asset"].apply(unify_symbol)
+        if 'timestamp' in trades.columns: trades['timestamp'] = pd.to_datetime(trades['timestamp'], errors='coerce')
 
-        for col in ["quantity", "price", "usd_value", "p_up", "p_down", "pnl", "pnl_pct"]:
-            if col in trades.columns: 
-                trades[col] = pd.to_numeric(trades[col], errors="coerce")
+        # Convert financial columns to Decimal for precision
+        for col in ["quantity", "price", "usd_value", "pnl", "pnl_pct"]:
+            if col in trades.columns:
+                trades[col] = trades[col].apply(lambda x: Decimal(str(x)) if pd.notna(x) else Decimal(0))
     
     if not market.empty:
         market = lower_strip_cols(market)
         market = market.rename(columns={"product_id": "asset"})
         
-        # Simple timestamp conversion - no timezone handling
-        if 'timestamp' in market.columns: 
-            market['timestamp'] = pd.to_datetime(market['timestamp'], errors='coerce')
-
+        if 'timestamp' in market.columns: market['timestamp'] = pd.to_datetime(market['timestamp'], errors='coerce')
         if 'asset' in market.columns: market["asset"] = market["asset"].apply(unify_symbol)
         market = normalize_prob_columns(market)
+        # Market data for plotting can remain as float for performance
         for col in ["open", "high", "low", "close", "p_up", "p_down"]:
             if col in market.columns: market[col] = pd.to_numeric(market[col], errors="coerce")
     
@@ -384,7 +373,6 @@ with st.expander("🔍 Data Freshness Debug", expanded=True):
     
     st.write(f"**Cache Age:** {time.time() - st.session_state.last_refresh:.1f} seconds")
     
-    # Timezone fix: Display current time in PST
     pst = pytz.timezone('America/Los_Angeles')
     now_utc = datetime.now(pytz.utc)
     now_pst = now_utc.astimezone(pst)
@@ -422,7 +410,6 @@ with st.sidebar:
                 st.session_state.clear()
                 st.rerun()
     
-    # Force fresh load button for debugging
     if st.button("🔍 Force Fresh Load (No Cache)"):
         st.cache_data.clear()
         st.session_state.clear()
@@ -449,7 +436,6 @@ with st.sidebar:
         if pd.notna(trade_min) and pd.notna(trade_max):
             days_span = (trade_max - trade_min).days
             days_old = (datetime.now() - trade_max).days
-            
             if days_span >= 0 and days_old <= 3:
                 min_date, max_date = trade_min, trade_max
                 date_source = "Trade Data"
@@ -512,7 +498,7 @@ with st.sidebar:
             st.metric("Win Rate", f"{summary_stats.get('win_rate', 0):.1f}%")
         with col2:
             pf = summary_stats.get('profit_factor', 0)
-            st.metric("Profit Factor", "∞" if np.isinf(pf) else f"{pf:.2f}")
+            st.metric("Profit Factor", "∞" if isinstance(pf, float) and np.isinf(pf) else f"{pf:.2f}")
             st.metric("Avg Win ($)", f"${summary_stats.get('avg_win', 0):.2f}")
 
     st.markdown("---")
@@ -630,23 +616,17 @@ with tab1:
                 
                 st.info(f"Showing {len(vis):,} candles from {start_date.strftime('%Y-%m-%d %H:%M')} to {end_date.strftime('%Y-%m-%d %H:%M')}")
                 
-                # --- START OF FIX ---
-                
-                # 1. Pre-calculate the y-axis range to determine the bottom for markers.
                 price_range = vis['high'].max() - vis['low'].min()
-                # Add extra padding at the bottom to make space for markers.
                 y_padding_top = price_range * 0.05
-                y_padding_bottom = price_range * 0.15 # Increased bottom padding
+                y_padding_bottom = price_range * 0.15
                 
                 y_min_range = vis['low'].min() - y_padding_bottom
                 y_max_range = vis['high'].max() + y_padding_top
                 
-                # Position markers just above the bottom of the chart's visible area.
                 marker_y_position = y_min_range + (price_range * 0.02)
                 
                 fig = go.Figure()
                 
-                # Add Candlestick chart
                 fig.add_trace(go.Candlestick(
                     x=vis["timestamp"], open=vis["open"], high=vis["high"], low=vis["low"], close=vis["close"], name=selected_asset, 
                     increasing_line_color='#26a69a', decreasing_line_color='#ef5350', 
@@ -654,7 +634,6 @@ with tab1:
                     line=dict(width=1)
                 ))
 
-                # RESTORED: Add ML Signals
                 if 'p_up' in vis.columns and 'p_down' in vis.columns:
                     prob_data = vis.dropna(subset=['p_up', 'p_down'])
                     if not prob_data.empty:
@@ -664,67 +643,56 @@ with tab1:
                         colors = ['#ff6b6b' if p_down > p_up else '#51cf66' for p_up, p_down in zip(prob_data['p_up'], prob_data['p_down'])]
                         fig.add_trace(go.Scatter(x=prob_data["timestamp"], y=prob_data["close"], mode='markers', marker=dict(size=prob_data['signal_strength'] / 5 + 3, color=colors, opacity=0.7, line=dict(width=1, color='white')), name='ML Signals', customdata=list(zip(prob_data['p_up'], prob_data['p_down'], prob_data['confidence'])), hovertemplate='<b>ML Signal</b><br>Time: %{x|%Y-%m-%d %H:%M}<br>Price: $%{y:.6f}<br>P(Up): %{customdata[0]:.3f}<br>P(Down): %{customdata[1]:.3f}<br>Confidence: %{customdata[2]:.3f}<extra></extra>'))
 
-
-                # Add Buy/Sell Markers at the bottom of the chart
                 if not trades_df.empty:
                     asset_trades = trades_df[(trades_df["asset"] == selected_asset) & (trades_df["timestamp"] >= start_date) & (trades_df["timestamp"] <= end_date)].copy()
                     
                     if not asset_trades.empty:
-                        # BUY Markers
                         buy_trades = asset_trades[asset_trades["unified_action"].str.lower().isin(["buy", "open"])]
                         if not buy_trades.empty:
-                            buy_prices = buy_trades["price"]
+                            buy_prices = buy_trades["price"].apply(float) # Convert Decimal to float for hover
                             buy_reasons = buy_trades.get('reason', pd.Series([''] * len(buy_trades))).fillna('')
                             fig.add_trace(go.Scatter(
                                 x=buy_trades["timestamp"], 
                                 y=[marker_y_position] * len(buy_trades), 
-                                mode="markers", # FIXED: Was "markers+text"
+                                mode="markers",
                                 name="BUY", 
                                 marker=dict(symbol='triangle-up', size=14, color='#4caf50', line=dict(width=1, color='white')),
                                 customdata=np.stack((buy_prices, buy_reasons), axis=-1),
-                                hovertemplate='<b>BUY</b> @ $%{customdata[0]:.6f}<br>%{x|%H:%M:%S}<br>Reason: %{customdata[1]}<extra></extra>'
+                                hovertemplate='<b>BUY</b> @ $%{customdata[0]:.8f}<br>%{x|%H:%M:%S}<br>Reason: %{customdata[1]}<extra></extra>'
                             ))
 
-                        # SELL Markers
                         sell_trades = asset_trades[asset_trades["unified_action"].str.lower().isin(["sell", "close"])]
                         if not sell_trades.empty:
-                            sell_prices = sell_trades["price"]
+                            sell_prices = sell_trades["price"].apply(float) # Convert Decimal to float for hover
                             sell_reasons = sell_trades.get('reason', pd.Series([''] * len(sell_trades))).fillna('')
                             fig.add_trace(go.Scatter(
                                 x=sell_trades["timestamp"], 
                                 y=[marker_y_position] * len(sell_trades),
-                                mode="markers", # FIXED: Was "markers+text"
+                                mode="markers",
                                 name="SELL", 
                                 marker=dict(symbol='triangle-down', size=14, color='#f44336', line=dict(width=1, color='white')),
                                 customdata=np.stack((sell_prices, sell_reasons), axis=-1),
-                                hovertemplate='<b>SELL</b> @ $%{customdata[0]:.6f}<br>%{x|%H:%M:%S}<br>Reason: %{customdata[1]}<extra></extra>'
+                                hovertemplate='<b>SELL</b> @ $%{customdata[0]:.8f}<br>%{x|%H:%M:%S}<br>Reason: %{customdata[1]}<extra></extra>'
                             ))
                             
-                # Set date tick format based on range
                 if range_choice in ["4 hours", "12 hours"]: 
                     tick_format = '%H:%M'
                 else: 
                     tick_format = '%m/%d %H:%M'
                 
-                # Update chart layout with dynamic title
                 fig.update_layout(
                     title=f"{selected_asset} — Price & Trades ({range_choice})", 
                     template="plotly_white", 
                     xaxis_rangeslider_visible=False, 
                     xaxis=dict(
-                        title="Time", 
-                        type='date', 
-                        tickformat=tick_format, 
-                        showgrid=True, 
-                        gridcolor='rgba(128,128,128,0.1)',
-                        tickangle=-45
+                        title="Time", type='date', tickformat=tick_format, 
+                        showgrid=True, gridcolor='rgba(128,128,128,0.1)', tickangle=-45
                     ), 
                     yaxis=dict(
                         title="Price (USD)", 
                         tickformat='.8f' if vis['close'].iloc[-1] < 0.001 else '.6f' if vis['close'].iloc[-1] < 1 else '.4f', 
-                        showgrid=True, 
-                        gridcolor='rgba(128,128,128,0.1)', 
-                        range=[y_min_range, y_max_range]  # Use pre-calculated range
+                        showgrid=True, gridcolor='rgba(128,128,128,0.1)', 
+                        range=[y_min_range, y_max_range]
                     ), 
                     hovermode="x unified", 
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), 
@@ -733,8 +701,6 @@ with tab1:
                     plot_bgcolor='rgba(250,250,250,0.8)'
                 )
                 st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True, 'modeBarButtonsToAdd': ['drawline', 'drawopenpath', 'drawclosedpath'], 'scrollZoom': True})
-                
-                # --- END OF FIX ---
                 
                 asset_trades = trades_df[(trades_df["asset"] == selected_asset) & (trades_df["timestamp"] >= start_date) & (trades_df["timestamp"] <= end_date)].copy() if not trades_df.empty else pd.DataFrame()
                 if not asset_trades.empty:
@@ -755,7 +721,6 @@ with tab1:
                             time_span = asset_trades['timestamp'].max() - asset_trades['timestamp'].min()
                             st.metric("Trading Span", f"{time_span}")
                 
-                # RESTORED: ML Signal Analysis Section
                 if 'p_up' in vis.columns and 'p_down' in vis.columns:
                     st.markdown("---")
                     st.markdown("### 🤖 ML Signal Analysis")
@@ -777,8 +742,12 @@ with tab1:
 with tab2:
     if not trades_df.empty and "timestamp" in trades_df.columns and "cumulative_pnl" in trades_df.columns:
         st.markdown("### Strategy Performance Analysis")
+        # Convert Decimal to float for plotting
+        plot_df = trades_df.copy()
+        plot_df['cumulative_pnl'] = plot_df['cumulative_pnl'].apply(float)
+        
         fig_pnl = go.Figure()
-        fig_pnl.add_trace(go.Scatter(x=trades_df["timestamp"], y=trades_df["cumulative_pnl"], mode="lines", name="Cumulative P&L", line=dict(color="blue", width=2)))
+        fig_pnl.add_trace(go.Scatter(x=plot_df["timestamp"], y=plot_df["cumulative_pnl"], mode="lines", name="Cumulative P&L", line=dict(color="blue", width=2)))
         fig_pnl.add_hline(y=0, line_dash="dash", line_color="gray", annotation_text="Break Even")
         fig_pnl.update_layout(title="Total Portfolio P&L", template="plotly_white", yaxis_title="P&L (USD)", xaxis_title="Date", hovermode="x unified")
         st.plotly_chart(fig_pnl, use_container_width=True)
@@ -793,6 +762,11 @@ with tab3:
         st.markdown("#### Completed Trades (FIFO)")
         if not matched_df.empty:
             display_matched = matched_df.copy()
+            # Convert Decimal columns to float for Streamlit display formatting
+            for col in ['Quantity', 'Buy Price', 'Sell Price', 'P&L ($)', 'P&L %']:
+                if col in display_matched.columns:
+                    display_matched[col] = display_matched[col].apply(float)
+
             display_matched['Buy Time'] = display_matched['Buy Time'].dt.strftime('%Y-%m-%d %H:%M:%S')
             display_matched['Sell Time'] = display_matched['Sell Time'].dt.strftime('%Y-%m-%d %H:%M:%S')
             display_matched['Hold Time'] = display_matched['Hold Time'].apply(lambda x: str(x).split('days')[-1].strip().split('.')[0])
@@ -803,8 +777,8 @@ with tab3:
                     "Quantity": st.column_config.NumberColumn(format="%.4f", width="small"),
                     "Buy Price": st.column_config.NumberColumn(format="$%.8f"),
                     "Sell Price": st.column_config.NumberColumn(format="$%.8f"),
-                    "P&L ($)": st.column_config.NumberColumn(format="$%.2f"),
-                    "P&L %": st.column_config.NumberColumn(format="%.2f%%"),
+                    "P&L ($)": st.column_config.NumberColumn(format="$%.4f"),
+                    "P&L %": st.column_config.NumberColumn(format="%.4f%%"),
                 },
                 use_container_width=True, hide_index=True
             )
@@ -814,11 +788,14 @@ with tab3:
         st.markdown("---")
         st.markdown("#### Open Positions")
         if not open_df.empty:
-            display_open = open_df[['timestamp', 'asset', 'quantity', 'price', 'reason']].copy()
+            display_open = open_df.copy()
+            # Convert Decimal to float for display
+            for col in ['quantity', 'price']:
+                if col in display_open.columns:
+                    display_open[col] = display_open[col].apply(float)
+
             display_open['Time'] = display_open['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
-            display_open = display_open.rename(columns={
-                'asset': 'Asset', 'quantity': 'Quantity', 'price': 'Price', 'reason': 'Reason'
-            })
+            display_open = display_open.rename(columns={'asset': 'Asset', 'quantity': 'Quantity', 'price': 'Price', 'reason': 'Reason'})
             
             st.dataframe(display_open[['Time', 'Asset', 'Quantity', 'Price', 'Reason']], 
                 column_config={
@@ -835,6 +812,4 @@ with tab3:
         st.warning("No trade history to display.")
 
 # Auto-refresh is handled by the check_auto_refresh() function at the top
-
-
 
