@@ -569,8 +569,8 @@ with tab1:
     assets = sorted(market_df["asset"].dropna().unique()) if (not market_df.empty and "asset" in market_df.columns) else []
     if assets:
         default_index = assets.index(DEFAULT_ASSET) if DEFAULT_ASSET in assets else 0
-        selected_asset = st.selectbox("Select Asset to View", assets, index=default_index, key="asset_select")
-        range_choice = st.selectbox("Select Date Range", ["4 hours", "12 hours", "1 day", "3 days", "7 days", "30 days", "All"], index=0, key="range_select")
+        selected_asset = st.selectbox("Select Asset to View", assets, index=default_index, key="asset_select_main")
+        range_choice = st.selectbox("Select Date Range", ["4 hours", "12 hours", "1 day", "3 days", "7 days", "30 days", "All"], index=0, key="range_select_main")
         asset_market_data = market_df[market_df['asset'] == selected_asset] if not market_df.empty else pd.DataFrame()
         if not asset_market_data.empty:
             last_price = asset_market_data.sort_values('timestamp').iloc[-1]['close']
