@@ -75,6 +75,16 @@ def normalize_prob_columns(df: pd.DataFrame) -> pd.DataFrame:
     if "p_down" not in df.columns: df["p_down"] = np.nan
     return df
 
+def format_timedelta_hours_minutes(td):
+    """Formats a pandas Timedelta into a total hours and minutes string like 'HH:MM'."""
+    if pd.isna(td):
+        return "N/A"
+    total_seconds = int(td.total_seconds())
+    total_minutes, _ = divmod(total_seconds, 60)
+    hours, minutes = divmod(total_minutes, 60)
+    return f"{hours:02d}:{minutes:02d}"
+
+
 def calculate_pnl_and_metrics(trades_df: pd.DataFrame):
     if trades_df is None or trades_df.empty:
         return {}, pd.DataFrame(), {}
@@ -438,7 +448,9 @@ with st.sidebar:
         trade_max = trades_df['timestamp'].max()
         if pd.notna(trade_min) and pd.notna(trade_max):
             days_span = (trade_max - trade_min).days
-            days_old = (datetime.now() - trade_max).days
+            now_utc = datetime.now(pytz.utc)
+            trade_max_utc = trade_max.tz_localize('UTC') if trade_max.tzinfo is None else trade_max
+            days_old = (now_utc - trade_max_utc).days
             if days_span >= 0 and days_old <= 3:
                 min_date, max_date = trade_min, trade_max
                 date_source = "Trade Data"
@@ -722,7 +734,7 @@ with tab1:
                     with col5:
                         if len(asset_trades) >= 2: 
                             time_span = asset_trades['timestamp'].max() - asset_trades['timestamp'].min()
-                            st.metric("Trading Span", f"{time_span}")
+                            st.metric("Trading Span", format_timedelta_hours_minutes(time_span))
                 
                 if 'p_up' in vis.columns and 'p_down' in vis.columns:
                     st.markdown("---")
@@ -772,7 +784,7 @@ with tab3:
 
             display_matched['Buy Time'] = display_matched['Buy Time'].dt.strftime('%Y-%m-%d %H:%M:%S')
             display_matched['Sell Time'] = display_matched['Sell Time'].dt.strftime('%Y-%m-%d %H:%M:%S')
-            display_matched['Hold Time'] = display_matched['Hold Time'].apply(lambda x: str(x).split('days')[-1].strip().split('.')[0])
+            display_matched['Hold Time'] = display_matched['Hold Time'].apply(format_timedelta_hours_minutes)
 
             st.dataframe(display_matched[['Asset', 'Quantity', 'Buy Time', 'Buy Price', 'Sell Time', 'Sell Price', 'Hold Time', 'P&L ($)', 'P&L %']],
                 column_config={
