@@ -211,7 +211,7 @@ def match_trades_fifo(trades_df: pd.DataFrame):
 
                     if buys[0]['quantity'] < 1e-9:
                         buys.pop(0)
-        
+            
         open_positions.extend(buys)
 
     matched_df = pd.DataFrame(matched_trades) if matched_trades else pd.DataFrame()
@@ -618,8 +618,23 @@ with tab1:
                 
                 st.info(f"Showing {len(vis):,} candles from {start_date.strftime('%Y-%m-%d %H:%M')} to {end_date.strftime('%Y-%m-%d %H:%M')}")
                 
+                # --- START OF DEBUG FIX ---
+                
+                # 1. Pre-calculate the y-axis range to determine the bottom for markers.
+                price_range = vis['high'].max() - vis['low'].min()
+                # Add extra padding at the bottom to make space for markers.
+                y_padding_top = price_range * 0.05
+                y_padding_bottom = price_range * 0.15 # Increased bottom padding
+                
+                y_min_range = vis['low'].min() - y_padding_bottom
+                y_max_range = vis['high'].max() + y_padding_top
+                
+                # Position markers just above the bottom of the chart's visible area.
+                marker_y_position = y_min_range + (price_range * 0.02)
+                
                 fig = go.Figure()
                 
+                # Add Candlestick chart
                 fig.add_trace(go.Candlestick(
                     x=vis["timestamp"], open=vis["open"], high=vis["high"], low=vis["low"], close=vis["close"], name=selected_asset, 
                     increasing_line_color='#26a69a', decreasing_line_color='#ef5350', 
@@ -627,6 +642,7 @@ with tab1:
                     line=dict(width=1)
                 ))
 
+                # Add ML Signals
                 if 'p_up' in vis.columns and 'p_down' in vis.columns:
                     prob_data = vis.dropna(subset=['p_up', 'p_down'])
                     if not prob_data.empty:
@@ -635,46 +651,59 @@ with tab1:
                         prob_data['signal_strength'] = prob_data['confidence'] * 100
                         colors = ['#ff6b6b' if p_down > p_up else '#51cf66' for p_up, p_down in zip(prob_data['p_up'], prob_data['p_down'])]
                         fig.add_trace(go.Scatter(x=prob_data["timestamp"], y=prob_data["close"], mode='markers', marker=dict(size=prob_data['signal_strength'] / 5 + 3, color=colors, opacity=0.7, line=dict(width=1, color='white')), name='ML Signals', customdata=list(zip(prob_data['p_up'], prob_data['p_down'], prob_data['confidence'])), hovertemplate='<b>ML Signal</b><br>Time: %{x|%Y-%m-%d %H:%M}<br>Price: $%{y:.6f}<br>P(Up): %{customdata[0]:.3f}<br>P(Down): %{customdata[1]:.3f}<br>Confidence: %{customdata[2]:.3f}<extra></extra>'))
-                
+
+                # Add Buy/Sell Markers at the bottom of the chart
                 if not trades_df.empty:
                     asset_trades = trades_df[(trades_df["asset"] == selected_asset) & (trades_df["timestamp"] >= start_date) & (trades_df["timestamp"] <= end_date)].copy()
                     
                     if not asset_trades.empty:
+                        # BUY Markers
                         buy_trades = asset_trades[asset_trades["unified_action"].str.lower().isin(["buy", "open"])]
                         if not buy_trades.empty:
-                            fig.add_trace(go.Scatter(x=buy_trades["timestamp"], y=buy_trades["price"], mode="markers+text", name="BUY", marker=dict(symbol='triangle-up', size=16, color='#4caf50', line=dict(width=2, color='white')), text=['▲'] * len(buy_trades), textposition="top center", textfont=dict(size=12, color='#4caf50'), customdata=buy_trades.get('reason', ''), hovertemplate='<b>BUY ORDER</b><br>Time: %{x|%Y-%m-%d %H:%M}<br>Price: $%{y:.6f}<br>Reason: %{customdata}<extra></extra>'))
+                            buy_prices = buy_trades["price"]
+                            buy_reasons = buy_trades.get('reason', pd.Series([''] * len(buy_trades))).fillna('')
+                            fig.add_trace(go.Scatter(
+                                x=buy_trades["timestamp"], 
+                                y=[marker_y_position] * len(buy_trades), 
+                                mode="markers+text",
+                                name="BUY", 
+                                marker=dict(symbol='triangle-up', size=14, color='#4caf50', line=dict(width=1, color='white')),
+                                text=['▲'] * len(buy_trades),
+                                textposition="top center",
+                                textfont=dict(size=12, color='#4caf50'),
+                                customdata=np.stack((buy_prices, buy_reasons), axis=-1),
+                                hovertemplate='<b>BUY</b> @ $%{customdata[0]:.6f}<br>%{x|%H:%M:%S}<br>Reason: %{customdata[1]}<extra></extra>'
+                            ))
+
+                        # SELL Markers
                         sell_trades = asset_trades[asset_trades["unified_action"].str.lower().isin(["sell", "close"])]
                         if not sell_trades.empty:
-                            fig.add_trace(go.Scatter(x=sell_trades["timestamp"], y=sell_trades["price"], mode="markers+text", name="SELL", marker=dict(symbol='triangle-down', size=16, color='#f44336', line=dict(width=2, color='white')), text=['▼'] * len(sell_trades), textposition="bottom center", textfont=dict(size=12, color='#f44336'), customdata=sell_trades.get('reason', ''), hovertemplate='<b>SELL ORDER</b><br>Time: %{x|%Y-%m-%d %H:%M}<br>Price: $%{y:.6f}<br>Reason: %{customdata}<extra></extra>'))
-                        
+                            sell_prices = sell_trades["price"]
+                            sell_reasons = sell_trades.get('reason', pd.Series([''] * len(sell_trades))).fillna('')
+                            fig.add_trace(go.Scatter(
+                                x=sell_trades["timestamp"], 
+                                y=[marker_y_position] * len(sell_trades),
+                                mode="markers+text",
+                                name="SELL", 
+                                marker=dict(symbol='triangle-down', size=14, color='#f44336', line=dict(width=1, color='white')),
+                                text=['▼'] * len(sell_trades),
+                                textposition="top center", # Place text above marker to keep it visible
+                                textfont=dict(size=12, color='#f44336'),
+                                customdata=np.stack((sell_prices, sell_reasons), axis=-1),
+                                hovertemplate='<b>SELL</b> @ $%{customdata[0]:.6f}<br>%{x|%H:%M:%S}<br>Reason: %{customdata[1]}<extra></extra>'
+                            ))
+                            
+                # 2. Connecting lines code block has been removed.
 
-
-                        sorted_trades = asset_trades.sort_values("timestamp")
-                        open_trades = []
-                        for _, trade in sorted_trades.iterrows():
-                            trade_action = str(trade.get('unified_action', '')).lower()
-                            if trade_action in ['buy', 'open']: 
-                                open_trades.append(trade)
-                            elif trade_action in ['sell', 'close'] and open_trades:
-                                buy_trade = open_trades.pop(0)
-                                pnl = float(trade.get('price', 0)) - float(buy_trade.get('price', 0))
-                                pnl_pct = (pnl / float(buy_trade.get('price', 1))) * 100
-                                line_color = "#4caf50" if pnl >= 0 else "#f44336"
-                                line_width = 4 if abs(pnl_pct) > 10 else 3 if abs(pnl_pct) > 5 else 2
-                                fig.add_trace(go.Scatter(x=[buy_trade['timestamp'], trade['timestamp']], y=[buy_trade['price'], trade['price']], mode='lines', line=dict(color=line_color, width=line_width, dash='solid'), opacity=0.8, showlegend=False, hovertemplate=f'<b>Trade P&L</b><br>P&L: ${pnl:.6f} ({pnl_pct:+.2f}%)<br>Hold Time: {trade["timestamp"] - buy_trade["timestamp"]}<extra></extra>', name='Trade P&L'))
-                
+                # Set date tick format based on range
                 if range_choice in ["4 hours", "12 hours"]: 
                     tick_format = '%H:%M'
                 else: 
                     tick_format = '%m/%d %H:%M'
                 
-                price_range = vis['high'].max() - vis['low'].min()
-                y_padding = price_range * 0.05
-                y_min = vis['low'].min() - y_padding
-                y_max = vis['high'].max() + y_padding
-                
+                # Update chart layout
                 fig.update_layout(
-                    title=f"{selected_asset} — Minute-Level Price & ML Signals ({range_choice})", 
+                    title=f"{selected_asset} — Price & Trades ({range_choice})", 
                     template="plotly_white", 
                     xaxis_rangeslider_visible=False, 
                     xaxis=dict(
@@ -683,14 +712,14 @@ with tab1:
                         tickformat=tick_format, 
                         showgrid=True, 
                         gridcolor='rgba(128,128,128,0.1)',
-                        tickangle=45
+                        tickangle=-45
                     ), 
                     yaxis=dict(
                         title="Price (USD)", 
                         tickformat='.8f' if vis['close'].iloc[-1] < 0.001 else '.6f' if vis['close'].iloc[-1] < 1 else '.4f', 
                         showgrid=True, 
                         gridcolor='rgba(128,128,128,0.1)', 
-                        range=[y_min, y_max]  # Fixed range
+                        range=[y_min_range, y_max_range]  # Use pre-calculated range
                     ), 
                     hovermode="x unified", 
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), 
@@ -699,6 +728,8 @@ with tab1:
                     plot_bgcolor='rgba(250,250,250,0.8)'
                 )
                 st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True, 'modeBarButtonsToAdd': ['drawline', 'drawopenpath', 'drawclosedpath'], 'scrollZoom': True})
+                
+                # --- END OF DEBUG FIX ---
                 
                 asset_trades = trades_df[(trades_df["asset"] == selected_asset) & (trades_df["timestamp"] >= start_date) & (trades_df["timestamp"] <= end_date)].copy() if not trades_df.empty else pd.DataFrame()
                 if not asset_trades.empty:
