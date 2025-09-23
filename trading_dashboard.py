@@ -670,6 +670,9 @@ with tab1:
                 
                 price_range = vis['high'].max() - vis['low'].min()
                 y_padding = price_range * 0.05
+                y_min = vis['low'].min() - y_padding
+                y_max = vis['high'].max() + y_padding
+                
                 fig.update_layout(
                     title=f"{selected_asset} — Minute-Level Price & ML Signals ({range_choice})", 
                     template="plotly_white", 
@@ -687,7 +690,7 @@ with tab1:
                         tickformat='.8f' if vis['close'].iloc[-1] < 0.001 else '.6f' if vis['close'].iloc[-1] < 1 else '.4f', 
                         showgrid=True, 
                         gridcolor='rgba(128,128,128,0.1)', 
-                        range=[vis['low'].min() - y_padding, vis['high'].max() + y_padding]
+                        range=[y_min, y_max]  # Fixed range
                     ), 
                     hovermode="x unified", 
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), 
