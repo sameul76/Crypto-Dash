@@ -191,6 +191,12 @@ def match_trades_fifo(trades_df: pd.DataFrame):
             sell_qty_remaining = sell.get('quantity', 0)
             
             while sell_qty_remaining > 1e-9 and buys:
+                # FIFO Fix: Ensure the buy occurred before the sell.
+                if buys[0]['timestamp'] >= sell['timestamp']:
+                    # This sell cannot be matched with the earliest available buy,
+                    # so we move on to the next sell.
+                    break
+
                 buy = buys[0]
                 buy_qty_remaining = buy.get('quantity', 0)
                 trade_qty = min(sell_qty_remaining, buy_qty_remaining)
@@ -829,5 +835,6 @@ with tab3:
         st.warning("No trade history to display.")
 
 # Auto-refresh is handled by the check_auto_refresh() function at the top
+
 
 
