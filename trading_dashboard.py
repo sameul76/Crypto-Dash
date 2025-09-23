@@ -132,7 +132,10 @@ def calculate_pnl_and_metrics(trades_df: pd.DataFrame):
         "avg_loss": (gl / loss) if loss else 0,
         "max_drawdown": mdd,
     }
-    df["asset_cumulative_pnl"] = df.groupby("asset")["pnl"].cumsum()
+    # Fix for TypeError: Use apply with a lambda function for cumsum on Decimal objects
+    if not df.empty and 'pnl' in df.columns:
+        df["asset_cumulative_pnl"] = df.groupby("asset")["pnl"].apply(lambda x: x.cumsum())
+    
     return pnl_per_asset, df, stats
 
 def calculate_open_positions(trades_df: pd.DataFrame, market_df: pd.DataFrame) -> pd.DataFrame:
