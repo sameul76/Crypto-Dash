@@ -7,9 +7,10 @@ import numpy as np
 import plotly.graph_objects as go
 import time
 from datetime import datetime, timedelta
+import pytz # Added for timezone conversion
 
-# Note: Reading Parquet files with pandas requires the 'pyarrow' library.
-# pip install streamlit pandas plotly pyarrow requests
+# Note: Reading Parquet files with pandas requires the 'pyarrow' and 'pytz' libraries.
+# pip install streamlit pandas plotly pyarrow requests pytz
 import pyarrow  # noqa: F401 (ensures pyarrow engine is available)
 
 # =========================
@@ -376,7 +377,12 @@ with st.expander("🔍 Data Freshness Debug", expanded=True):
         st.write(f"**Total Market Records:** {len(market_df)}")
     
     st.write(f"**Cache Age:** {time.time() - st.session_state.last_refresh:.1f} seconds")
-    st.write(f"**Current Time:** {datetime.now()}")
+    
+    # Timezone fix: Display current time in PST
+    pst = pytz.timezone('America/Los_Angeles')
+    now_utc = datetime.now(pytz.utc)
+    now_pst = now_utc.astimezone(pst)
+    st.write(f"**Current Time (PST):** {now_pst.strftime('%Y-%m-%d %H:%M:%S %Z')}")
 
 with st.expander("🔎 Debug — data status"):
     st.write({
@@ -694,7 +700,7 @@ with tab1:
                 else: 
                     tick_format = '%m/%d %H:%M'
                 
-                # Update chart layout
+                # Update chart layout with dynamic title
                 fig.update_layout(
                     title=f"{selected_asset} — Price & Trades ({range_choice})", 
                     template="plotly_white", 
@@ -823,4 +829,5 @@ with tab3:
         st.warning("No trade history to display.")
 
 # Auto-refresh is handled by the check_auto_refresh() function at the top
+
 
