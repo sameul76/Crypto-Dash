@@ -618,7 +618,7 @@ with tab1:
                 
                 st.info(f"Showing {len(vis):,} candles from {start_date.strftime('%Y-%m-%d %H:%M')} to {end_date.strftime('%Y-%m-%d %H:%M')}")
                 
-                # --- START OF DEBUG FIX ---
+                # --- START OF FIX ---
                 
                 # 1. Pre-calculate the y-axis range to determine the bottom for markers.
                 price_range = vis['high'].max() - vis['low'].min()
@@ -642,7 +642,7 @@ with tab1:
                     line=dict(width=1)
                 ))
 
-                # Add ML Signals
+                # RESTORED: Add ML Signals
                 if 'p_up' in vis.columns and 'p_down' in vis.columns:
                     prob_data = vis.dropna(subset=['p_up', 'p_down'])
                     if not prob_data.empty:
@@ -651,6 +651,7 @@ with tab1:
                         prob_data['signal_strength'] = prob_data['confidence'] * 100
                         colors = ['#ff6b6b' if p_down > p_up else '#51cf66' for p_up, p_down in zip(prob_data['p_up'], prob_data['p_down'])]
                         fig.add_trace(go.Scatter(x=prob_data["timestamp"], y=prob_data["close"], mode='markers', marker=dict(size=prob_data['signal_strength'] / 5 + 3, color=colors, opacity=0.7, line=dict(width=1, color='white')), name='ML Signals', customdata=list(zip(prob_data['p_up'], prob_data['p_down'], prob_data['confidence'])), hovertemplate='<b>ML Signal</b><br>Time: %{x|%Y-%m-%d %H:%M}<br>Price: $%{y:.6f}<br>P(Up): %{customdata[0]:.3f}<br>P(Down): %{customdata[1]:.3f}<br>Confidence: %{customdata[2]:.3f}<extra></extra>'))
+
 
                 # Add Buy/Sell Markers at the bottom of the chart
                 if not trades_df.empty:
@@ -665,12 +666,9 @@ with tab1:
                             fig.add_trace(go.Scatter(
                                 x=buy_trades["timestamp"], 
                                 y=[marker_y_position] * len(buy_trades), 
-                                mode="markers+text",
+                                mode="markers", # FIXED: Was "markers+text"
                                 name="BUY", 
                                 marker=dict(symbol='triangle-up', size=14, color='#4caf50', line=dict(width=1, color='white')),
-                                text=['▲'] * len(buy_trades),
-                                textposition="top center",
-                                textfont=dict(size=12, color='#4caf50'),
                                 customdata=np.stack((buy_prices, buy_reasons), axis=-1),
                                 hovertemplate='<b>BUY</b> @ $%{customdata[0]:.6f}<br>%{x|%H:%M:%S}<br>Reason: %{customdata[1]}<extra></extra>'
                             ))
@@ -683,18 +681,13 @@ with tab1:
                             fig.add_trace(go.Scatter(
                                 x=sell_trades["timestamp"], 
                                 y=[marker_y_position] * len(sell_trades),
-                                mode="markers+text",
+                                mode="markers", # FIXED: Was "markers+text"
                                 name="SELL", 
                                 marker=dict(symbol='triangle-down', size=14, color='#f44336', line=dict(width=1, color='white')),
-                                text=['▼'] * len(sell_trades),
-                                textposition="top center", # Place text above marker to keep it visible
-                                textfont=dict(size=12, color='#f44336'),
                                 customdata=np.stack((sell_prices, sell_reasons), axis=-1),
                                 hovertemplate='<b>SELL</b> @ $%{customdata[0]:.6f}<br>%{x|%H:%M:%S}<br>Reason: %{customdata[1]}<extra></extra>'
                             ))
                             
-                # 2. Connecting lines code block has been removed.
-
                 # Set date tick format based on range
                 if range_choice in ["4 hours", "12 hours"]: 
                     tick_format = '%H:%M'
@@ -729,7 +722,7 @@ with tab1:
                 )
                 st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True, 'modeBarButtonsToAdd': ['drawline', 'drawopenpath', 'drawclosedpath'], 'scrollZoom': True})
                 
-                # --- END OF DEBUG FIX ---
+                # --- END OF FIX ---
                 
                 asset_trades = trades_df[(trades_df["asset"] == selected_asset) & (trades_df["timestamp"] >= start_date) & (trades_df["timestamp"] <= end_date)].copy() if not trades_df.empty else pd.DataFrame()
                 if not asset_trades.empty:
@@ -749,6 +742,8 @@ with tab1:
                         if len(asset_trades) >= 2: 
                             time_span = asset_trades['timestamp'].max() - asset_trades['timestamp'].min()
                             st.metric("Trading Span", f"{time_span}")
+                
+                # RESTORED: ML Signal Analysis Section
                 if 'p_up' in vis.columns and 'p_down' in vis.columns:
                     st.markdown("---")
                     st.markdown("### 🤖 ML Signal Analysis")
@@ -759,6 +754,7 @@ with tab1:
                         with col2: bearish_signals = len(prob_data[prob_data['p_down'] > prob_data['p_up']]); st.metric("Bearish Signals", f"{bearish_signals} ({bearish_signals/len(prob_data)*100:.1f}%)")
                         with col3: avg_confidence = abs(prob_data['p_up'] - prob_data['p_down']).mean(); st.metric("Avg Confidence", f"{avg_confidence:.3f}")
                         with col4: high_conf_signals = len(prob_data[abs(prob_data['p_up'] - prob_data['p_down']) > 0.1]); st.metric("High Confidence", f"{high_conf_signals} (>10%)")
+
             else:
                 st.warning(f"No data for {selected_asset} in the selected date range of {range_choice}.")
         else:
@@ -827,3 +823,4 @@ with tab3:
         st.warning("No trade history to display.")
 
 # Auto-refresh is handled by the check_auto_refresh() function at the top
+
