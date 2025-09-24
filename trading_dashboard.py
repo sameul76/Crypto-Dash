@@ -438,7 +438,7 @@ with st.expander("🔎 Debug — data status"):
 # =========================
 with st.sidebar:
     st.markdown("<h1 style='text-align: center;'>Crypto Strategy</h1>", unsafe_allow_html=True)
-    
+
     col1, col2 = st.columns([2, 2])
     with col1:
         auto_refresh = st.toggle("🔄 Auto-Refresh (5min)", value=st.session_state.get('auto_refresh_enabled', True))
@@ -455,21 +455,27 @@ with st.sidebar:
                 st.cache_data.clear()
                 st.session_state.clear()
                 st.rerun()
-    
+
     if st.button("🔍 Force Fresh Load (No Cache)"):
         st.cache_data.clear()
         st.session_state.clear()
         st.rerun()
-    
-    if st.session_state.get('auto_refresh_enabled', True):
-        time_until_refresh = REFRESH_INTERVAL - time_since_refresh
-        if time_until_refresh > 0:
-            minutes, seconds = divmod(int(time_until_refresh), 60)
-            st.markdown(f"<p style='text-align: center; font-size: 0.8em; color: #4CAF50;'>⏱️ Next refresh: {minutes:02d}:{seconds:02d}</p>", unsafe_allow_html=True)
-        else:
-            st.markdown(f"<p style='text-align: center; font-size: 0.8em; color: #4CAF50;'>🔄 Refreshing...</p>", unsafe_allow_html=True)
+
+    # ✅ FIXED INDENTATION HERE
+    if st.session_state.get("auto_refresh_enabled", True):
+        elapsed = seconds_since_last_run()
+        time_until = max(0, REFRESH_INTERVAL - int(elapsed))
+        m, s = divmod(time_until, 60)
+        st.markdown(
+            f"<p style='text-align:center;font-size:0.8em;color:#4CAF50;'>⏱️ Next refresh: {m:02d}:{s:02d}</p>",
+            unsafe_allow_html=True,
+        )
     else:
-        st.markdown(f"<p style='text-align: center; font-size: 0.8em; color: #888;'>Auto-refresh disabled</p>", unsafe_allow_html=True)
+        st.markdown(
+            "<p style='text-align:center;font-size:0.8em;color:#888;'>Auto-refresh disabled</p>",
+            unsafe_allow_html=True,
+        )
+
     
     st.markdown("---")
 
@@ -847,6 +853,7 @@ with tab3:
         st.warning("No trade history to display.")
 
 # Auto-refresh is handled by the check_auto_refresh() function at the top
+
 
 
 
