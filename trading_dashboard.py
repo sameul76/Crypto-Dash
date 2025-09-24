@@ -36,7 +36,7 @@ DEFAULT_ASSET = "GIGA-USD"
 # =========================
 # Google Drive Links
 # =========================
-TRADES_LINK = "https://drive.google.com/file/d/1hyM37eafLgvMo8JRDtw9GSEdZ-LQ05ks/view?usp=sharing"
+TRADES_LINK = "https://drive.google.com/file/d/1hyM37eafLgvMo8RJDtw9GSEdZ-LQ05ks/view?usp=sharing"
 MARKET_LINK = "https://drive.google.com/file/d/1JaNhwQTcYOZ-tpP_ZwHXHtNzo-GpW-TO/view?usp=sharing"
 
 # =========================
@@ -904,4 +904,5 @@ with tab3:
             st.info("No open positions.")
     else:
         st.warning("No trade history to display.")
+
 
