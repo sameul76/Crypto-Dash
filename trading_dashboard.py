@@ -398,38 +398,113 @@ st.caption("ML Signals with Price-Based Exit Logic (timestamps read exactly as s
 trades_df, market_df = load_data(TRADES_LINK, MARKET_LINK)
 elapsed = maybe_auto_refresh()
 
-# ========= Debug panel =========
+# ========= FIXED Debug panel =========
 with st.expander("🔎 Data Freshness Debug", expanded=True):
     # Trades
     if not trades_df.empty and "timestamp" in trades_df.columns:
-        tr_parsed = _parsed_ts(trades_df["timestamp"])
-        tr_parsed_max = tr_parsed.max()
-        tr_raw_latest = None
-        if pd.notna(tr_parsed_max):
-            try:
-                tr_raw_latest = trades_df.loc[tr_parsed.idxmax(), "timestamp"]
-            except Exception:
-                tr_raw_latest = None
-        st.write(f"**Latest Trade Timestamp (raw):** {tr_raw_latest}")
-        st.write(f"**Latest Trade Timestamp (parsed):** {tr_parsed_max}")
+        # Create a working copy with parsed timestamps
+        trades_debug = trades_df.copy()
+        trades_debug["__parsed_ts__"] = _parsed_ts(trades_debug["timestamp"])
+        
+        # Remove any rows where timestamp couldn't be parsed
+        trades_debug_valid = trades_debug.dropna(subset=["__parsed_ts__"])
+        
+        if not trades_debug_valid.empty:
+            # Sort by parsed timestamp to get the truly latest entry
+            trades_debug_sorted = trades_debug_valid.sort_values("__parsed_ts__")
+            latest_idx = trades_debug_sorted.index[-1]  # Last row after sorting
+            
+            tr_raw_latest = trades_debug_sorted.loc[latest_idx, "timestamp"]
+            tr_parsed_latest = trades_debug_sorted.loc[latest_idx, "__parsed_ts__"]
+            
+            st.write(f"**Latest Trade Timestamp (raw):** {tr_raw_latest}")
+            st.write(f"**Latest Trade Timestamp (parsed):** {tr_parsed_latest}")
+            
+            # Show parsing issues if any
+            total_trades = len(trades_df)
+            valid_trades = len(trades_debug_valid)
+            if total_trades != valid_trades:
+                st.warning(f"⚠️ {total_trades - valid_trades} trades have unparseable timestamps")
+        else:
+            st.error("❌ No valid timestamps found in trades data")
+            st.write("**Sample raw timestamps:**")
+            st.write(trades_df["timestamp"].head().tolist())
+    else:
+        st.write("**Latest Trade Timestamp (raw):** No trade data")
+        st.write("**Latest Trade Timestamp (parsed):** No trade data")
+    
     st.write(f"**Total Trades:** {len(trades_df):,}")
 
     # Market
     if not market_df.empty and "timestamp" in market_df.columns:
-        mk_parsed = _parsed_ts(market_df["timestamp"])
-        mk_parsed_max = mk_parsed.max()
-        mk_raw_latest = None
-        if pd.notna(mk_parsed_max):
-            try:
-                mk_raw_latest = market_df.loc[mk_parsed.idxmax(), "timestamp"]
-            except Exception:
-                mk_raw_latest = None
-        st.write(f"**Latest Market Timestamp (raw):** {mk_raw_latest}")
-        st.write(f"**Latest Market Timestamp (parsed):** {mk_parsed_max}")
-        st.write(f"**Market timestamp dtype:** {market_df['timestamp'].dtype}")
+        # Create a working copy with parsed timestamps
+        market_debug = market_df.copy()
+        market_debug["__parsed_ts__"] = _parsed_ts(market_debug["timestamp"])
+        
+        # Remove any rows where timestamp couldn't be parsed
+        market_debug_valid = market_debug.dropna(subset=["__parsed_ts__"])
+        
+        if not market_debug_valid.empty:
+            # Sort by parsed timestamp to get the truly latest entry
+            market_debug_sorted = market_debug_valid.sort_values("__parsed_ts__")
+            latest_idx = market_debug_sorted.index[-1]  # Last row after sorting
+            
+            mk_raw_latest = market_debug_sorted.loc[latest_idx, "timestamp"]
+            mk_parsed_latest = market_debug_sorted.loc[latest_idx, "__parsed_ts__"]
+            
+            st.write(f"**Latest Market Timestamp (raw):** {mk_raw_latest}")
+            st.write(f"**Latest Market Timestamp (parsed):** {mk_parsed_latest}")
+            st.write(f"**Market timestamp dtype:** {market_df['timestamp'].dtype}")
+            
+            # Show parsing issues if any
+            total_market = len(market_df)
+            valid_market = len(market_debug_valid)
+            if total_market != valid_market:
+                st.warning(f"⚠️ {total_market - valid_market} market records have unparseable timestamps")
+        else:
+            st.error("❌ No valid timestamps found in market data")
+            st.write("**Sample raw timestamps:**")
+            st.write(market_df["timestamp"].head().tolist())
+        
         st.write(f"**Total Market Records:** {len(market_df):,}")
+    else:
+        st.write("**Latest Market Timestamp (raw):** No market data")
+        st.write("**Latest Market Timestamp (parsed):** No market data")
 
     st.write(f"**Cache age:** {elapsed}s")
+
+# Add additional debugging section
+with st.expander("🔍 Deep Dive Debug", expanded=False):
+    if not trades_df.empty and "timestamp" in trades_df.columns:
+        st.write("**Last 10 Trade Timestamps (raw order):**")
+        st.dataframe(trades_df[["timestamp"]].tail(10))
+        
+        # Show timestamp format analysis
+        sample_timestamps = trades_df["timestamp"].dropna().head(5).tolist()
+        st.write("**Sample timestamp formats:**")
+        for i, ts in enumerate(sample_timestamps):
+            st.write(f"{i+1}. `{ts}` (type: {type(ts).__name__})")
+        
+        # Check for duplicates or sorting issues
+        parsed_ts = _parsed_ts(trades_df["timestamp"])
+        valid_parsed = parsed_ts.dropna()
+        if len(valid_parsed) > 0:
+            is_sorted = valid_parsed.is_monotonic_increasing
+            st.write(f"**Data chronologically sorted:** {'✅ Yes' if is_sorted else '❌ No'}")
+            st.write(f"**Timestamp range:** {valid_parsed.min()} to {valid_parsed.max()}")
+    
+    if not market_df.empty and "timestamp" in market_df.columns:
+        st.write("**Last 10 Market Timestamps (raw order):**")
+        st.dataframe(market_df[["timestamp", "asset"]].tail(10))
+        
+        # Check market data sorting by asset
+        for asset in market_df["asset"].unique()[:3]:  # Check first 3 assets
+            asset_data = market_df[market_df["asset"] == asset]
+            parsed_ts = _parsed_ts(asset_data["timestamp"])
+            valid_parsed = parsed_ts.dropna()
+            if len(valid_parsed) > 0:
+                is_sorted = valid_parsed.is_monotonic_increasing
+                st.write(f"**{asset} chronologically sorted:** {'✅ Yes' if is_sorted else '❌ No'}")
 
 # ========= Sidebar =========
 with st.sidebar:
