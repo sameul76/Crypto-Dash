@@ -581,18 +581,15 @@ tab1, tab2, tab3 = st.tabs(["📈 Price & Trades", "💰 P&L Analysis", "📜 Tr
 with tab1:
     assets = sorted(market_df["asset"].dropna().astype(str).unique()) if (not market_df.empty and "asset" in market_df.columns) else []
     if assets:
-        # --- Select asset ---
+        # --- Select asset (stateLESS) ---
         default_index = assets.index(DEFAULT_ASSET) if DEFAULT_ASSET in assets else 0
-        st.selectbox(
+        selected_asset = st.selectbox(
             "Select Asset to View",
             assets,
-            index=default_index,
-            key="asset_select_main",
+            index=default_index,        # no key here
         )
-        # ALWAYS read it back from session_state
-        selected_asset = st.session_state.get("asset_select_main", assets[default_index])
 
-        # --- Select range (unchanged) ---
+        # --- Select range (you can keep this one with a key if you want) ---
         range_choice = st.selectbox(
             "Select Date Range",
             ["4 hours", "12 hours", "1 day", "3 days", "7 days", "30 days", "All"],
@@ -600,11 +597,20 @@ with tab1:
             key="range_select_main"
         )
 
-        # (Optional) tiny state chip to confirm the active asset
+        # (Optional) quick check
         st.caption(f"Active asset: **{selected_asset}**")
 
-        # --- Slice data for THIS asset only ---
+        # everything below unchanged, but now uses selected_asset directly
         asset_market_data = market_df[market_df['asset'] == selected_asset].copy() if not market_df.empty else pd.DataFrame()
+        ...
+        fig.update_layout(title=f"{selected_asset} — Price & Trades ({range_choice})", ...)
+        st.plotly_chart(
+            fig,
+            use_container_width=True,
+            config={'displayModeBar': True, 'modeBarButtonsToAdd': ['drawline','drawopenpath','drawclosedpath'], 'scrollZoom': True},
+            key=f"price_chart_{selected_asset}_{range_choice.replace(' ', '_')}"  # keep unique key so Plotly remounts
+        )
+
 
         if not asset_market_data.empty:
             last_price = asset_market_data.sort_values('timestamp').iloc[-1]['close']
@@ -776,5 +782,6 @@ with tab3:
         st.warning("No trade history to display.")
 
 # Auto-refresh is handled by the check_auto_refresh() function at the top
+
 
 
