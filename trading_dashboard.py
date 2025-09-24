@@ -729,43 +729,27 @@ with st.sidebar:
             open_time = pos.get("Open Time", "N/A")
             quantity = pos["Quantity"]
             
-            # Position card with better structure and alignment
+            # Position card with simplified HTML for better compatibility
+            card_bg = "rgba(22,163,74,0.1)" if pnl >= 0 else "rgba(239,68,68,0.1)"
+            
             st.markdown(
                 f"""
-                <div style='background-color: {"rgba(22,163,74,0.1)" if pnl >= 0 else "rgba(239,68,68,0.1)"}; 
-                           border-left: 4px solid {color}; 
-                           padding: 0.75rem; 
-                           margin: 0.5rem 0; 
-                           border-radius: 0.25rem;'>
-                    
-                    <!-- Asset and Performance Row -->
-                    <div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;'>
-                        <span style='font-weight: 700; font-size: 0.9rem;'>{asset_name}</span>
-                        <span style='color: {color}; font-weight: 700; font-size: 0.85rem;'>{pnl_icon} {pnl_pct:+.1f}%</span>
+                <div style="background-color: {card_bg}; border-left: 4px solid {color}; padding: 12px; margin: 8px 0; border-radius: 4px;">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                        <strong style="font-size: 14px;">{asset_name}</strong>
+                        <span style="color: {color}; font-weight: bold; font-size: 13px;">{pnl_icon} {pnl_pct:+.1f}%</span>
                     </div>
-                    
-                    <!-- Time and Quantity Row -->
-                    <div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;'>
-                        <div style='display: flex; align-items: center;'>
-                            <span style='font-size: 0.7rem; color: #888; background-color: rgba(128,128,128,0.1); 
-                                        padding: 0.15rem 0.4rem; border-radius: 0.25rem; font-weight: 600;'>
-                                ⏰ {open_time}
-                            </span>
-                        </div>
-                        <span style='font-size: 0.75rem; color: #666; font-weight: 500;'>Qty: {quantity:.4f}</span>
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                        <span style="font-size: 11px; color: #888; background: rgba(128,128,128,0.1); padding: 2px 6px; border-radius: 3px;">⏰ {open_time}</span>
+                        <span style="font-size: 12px; color: #666;">Qty: {quantity:.4f}</span>
                     </div>
-                    
-                    <!-- Price Information Row -->
-                    <div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem;'>
-                        <span style='font-size: 0.75rem; color: #666;'>Current: <strong>${cur_price:{pf}}</strong></span>
-                        <span style='font-size: 0.75rem; color: #666;'>Entry: <strong>${avg_price:{epf}}</strong></span>
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+                        <span style="font-size: 12px; color: #666;">Current: <strong>${cur_price:{pf}}</strong></span>
+                        <span style="font-size: 12px; color: #666;">Entry: <strong>${avg_price:{epf}}</strong></span>
                     </div>
-                    
-                    <!-- P&L Row -->
-                    <div style='text-align: center; padding-top: 0.3rem; border-top: 1px solid rgba(128,128,128,0.2);'>
-                        <span style='color: {color}; font-weight: 700; font-size: 0.8rem;'>P&L: ${pnl:+.4f}</span>
+                    <div style="text-align: center; padding-top: 5px; border-top: 1px solid rgba(128,128,128,0.2);">
+                        <span style="color: {color}; font-weight: bold; font-size: 13px;">P&L: ${pnl:+.4f}</span>
                     </div>
-                    
                 </div>
                 """, 
                 unsafe_allow_html=True
