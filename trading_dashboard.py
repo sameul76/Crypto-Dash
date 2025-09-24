@@ -522,11 +522,18 @@ with st.sidebar:
             st.rerun()
 
     if st.session_state.get("auto_refresh_enabled", True):
-        remaining = max(0, REFRESH_INTERVAL - seconds_since_last_run())
-        m, s = divmod(remaining, 60)
-        st.caption(f"⏱️ Next refresh in {m:02d}:{s:02d}")
+        elapsed_m, elapsed_s = divmod(elapsed, 60)
+        remaining = max(0, REFRESH_INTERVAL - elapsed)
+        if remaining > 0:
+            remaining_m, remaining_s = divmod(remaining, 60)
+            st.caption(f"⏱️ Last refresh: {elapsed_m:02d}:{elapsed_s:02d} ago")
+            st.caption(f"🔄 Next refresh: ~{remaining_m:02d}:{remaining_s:02d}")
+        else:
+            st.caption(f"🔄 Refreshing now...")
     else:
-        st.caption("Auto-refresh disabled")
+        elapsed_m, elapsed_s = divmod(elapsed, 60)
+        st.caption(f"⏸️ Auto-refresh disabled")
+        st.caption(f"Last refresh: {elapsed_m:02d}:{elapsed_s:02d} ago")
 
     st.markdown("---")
     st.markdown(f"**Trades:** {'✅' if not trades_df.empty else '⚠️'} {len(trades_df):,}")
@@ -751,63 +758,27 @@ with tab1:
                         if not at.empty:
                             t_parsed = _parsed_ts(at["timestamp"])
                             asset_trades_period = at.loc[(t_parsed >= start_parsed) & (t_parsed <= end_parsed)].copy()
-                    c1, c2, c3, c4, c5 = st.columns(5)
+                    
+                    # Calculate buy/sell orders for the period
+                    buy_orders = 0
+                    sell_orders = 0
+                    if not asset_trades_period.empty:
+                        buy_orders = len(asset_trades_period[asset_trades_period["unified_action"].str.lower().isin(["buy", "open"])])
+                        sell_orders = len(asset_trades_period[asset_trades_period["unified_action"].str.lower().isin(["sell", "close"])])
+                    
+                    c1, c2, c3, c4 = st.columns(4)
                     with c1:
-                        st.metric("Total Trades", len(asset_trades_period))
+                        st.metric("Trade Orders", len(asset_trades_period))
                     with c2:
-                        st.metric("Buy Orders", len(asset_trades_period[asset_trades_period["unified_action"].str.lower().isin(["buy", "open"])]))
+                        st.metric("Buy Orders", buy_orders)
                     with c3:
-                        st.metric("Sell Orders", len(asset_trades_period[asset_trades_period["unified_action"].str.lower().isin(["sell", "close"])]))
+                        st.metric("Sell Orders", sell_orders)
                     with c4:
                         if "pnl" in asset_trades_period.columns:
                             period_pnl = asset_trades_period["pnl"].sum()
                             st.metric("Period P&L", f"${period_pnl:.6f}")
-                    with c5:
-                        if len(asset_trades_period) >= 2 and "timestamp" in asset_trades_period.columns:
-                            tps = _parsed_ts(asset_trades_period["timestamp"])
-                            span = tps.max() - tps.min()
-                            st.metric("Trading Span", format_timedelta_hhmm(span))
-
-                    # Watchlist/Open positions
-                    st.markdown("---")
-                    open_positions_df = calculate_open_positions(trades_df, market_df) if not trades_df.empty else pd.DataFrame()
-                    if not open_positions_df.empty:
-                        st.markdown("### Open Positions")
-                        for _, pos in open_positions_df.iterrows():
-                            pnl = pos["Unrealized P&L ($)"]
-                            color = "#16a34a" if pnl >= 0 else "#ef4444"
-                            asset_name = pos["Asset"]
-                            cur_price = pos["Current Price"]
-                            pf = ".8f" if cur_price < 0.001 else ".6f" if cur_price < 1 else ".2f"
-                            avg_price = pos["Avg. Entry Price"]
-                            epf = ".8f" if avg_price < 0.001 else ".6f" if avg_price < 1 else ".2f"
-                            st.markdown(
-                                f"<div style='display:flex;justify-content:space-between;'>"
-                                f"<span style='color:{color};font-weight:700'>{asset_name}</span>"
-                                f"<span style='font-weight:700'>${cur_price:{pf}}</span></div>",
-                                unsafe_allow_html=True,
-                            )
-                            st.caption(
-                                f"Qty: {pos['Quantity']:.4f} | Entry: ${avg_price:{epf}} | P&L: ${pnl:.2f}"
-                            )
-
-                    if not market_df.empty and "asset" in market_df.columns:
-                        st.markdown("---")
-                        st.markdown("### Watchlist")
-                        held = set(open_positions_df["Asset"]) if not open_positions_df.empty else set()
-                        for a in sorted(market_df["asset"].dropna().unique()):
-                            if a in held:
-                                continue
-                            rows = market_df[market_df["asset"] == a]
-                            if not rows.empty:
-                                idx = _parsed_ts(rows["timestamp"]).idxmax()
-                                last = rows.loc[idx, "close"]
-                                pf = ".8f" if last < 0.001 else ".6f" if last < 1 else ".2f"
-                                st.markdown(
-                                    f"<div style='display:flex;justify-content:space-between;color:#666'>"
-                                    f"<span>{a}</span><span style='font-weight:600'>${last:{pf}}</span></div>",
-                                    unsafe_allow_html=True,
-                                )
+                        else:
+                            st.metric("Period P&L", "N/A")
 
 # ----- TAB 2: P&L Analysis -----
 with tab2:
@@ -943,4 +914,3 @@ with tab3:
             )
         else:
             st.info("No open positions.")
-
