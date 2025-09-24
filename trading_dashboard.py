@@ -16,7 +16,7 @@ getcontext().prec = 30  # precision for Decimal math
 
 # ---- Google Drive links (update if files move) ----
 TRADES_LINK = "https://drive.google.com/file/d/1hyM37eafLgvMo8RJDtw9GSEdZ-LQ05ks/view?usp=sharing"
-MARKET_LINK = "https://drive.google.com/file/d/1JaNhwQTcYOZ-tpP_ZwHXHtNzo-GpW-TO/view?usp=drive_link"
+MARKET_LINK = "https://drive.google.com/file/d/17ASJZw2zZ0oZweuiN62uDx97tRP9fxF1/view?usp=sharing"
 
 DEFAULT_ASSET = "GIGA-USD"
 REFRESH_INTERVAL = 300  # seconds
@@ -533,6 +533,32 @@ with st.sidebar:
     st.markdown(f"**Market:** {'✅' if not market_df.empty else '❌'} {len(market_df):,}")
     if not market_df.empty and "asset" in market_df.columns:
         st.markdown(f"**Assets:** {market_df['asset'].nunique():,}")
+    
+    # Open Positions in Sidebar
+    st.markdown("---")
+    open_positions_df = calculate_open_positions(trades_df, market_df) if not trades_df.empty else pd.DataFrame()
+    if not open_positions_df.empty:
+        st.markdown("**Open Positions**")
+        for _, pos in open_positions_df.iterrows():
+            pnl = pos["Unrealized P&L ($)"]
+            color = "#16a34a" if pnl >= 0 else "#ef4444"
+            asset_name = pos["Asset"]
+            cur_price = pos["Current Price"]
+            pf = ".8f" if cur_price < 0.001 else ".6f" if cur_price < 1 else ".2f"
+            avg_price = pos["Avg. Entry Price"]
+            epf = ".8f" if avg_price < 0.001 else ".6f" if avg_price < 1 else ".2f"
+            st.markdown(
+                f"<div style='display:flex;justify-content:space-between;'>"
+                f"<span style='color:{color};font-weight:700'>{asset_name}</span>"
+                f"<span style='font-weight:700'>${cur_price:{pf}}</span></div>",
+                unsafe_allow_html=True,
+            )
+            st.caption(
+                f"Qty: {pos['Quantity']:.4f} | Entry: ${avg_price:{epf}} | P&L: ${pnl:.2f}"
+            )
+    else:
+        st.markdown("**Open Positions**")
+        st.caption("No open positions")
 
 # ========= Tabs =========
 tab1, tab2, tab3 = st.tabs(["📈 Price & Trades", "💰 P&L Analysis", "📜 Trade History"])
@@ -917,4 +943,3 @@ with tab3:
             )
         else:
             st.info("No open positions.")
-
