@@ -41,7 +41,7 @@ DEFAULT_ASSET = "GIGA-USD"
 # Trade log file (trades_log.parquet) - UPDATED
 TRADES_LINK = "https://drive.google.com/file/d/1hyM37eafLgvMo8RJDtw9GSEdZ-LQ05ks/view?usp=sharing"
 # Features/market data file (trading_data_complete.parquet)
-MARKET_LINK = "https://drive.google.com/file/d/17ASJZw2zZ0oZweuiN62uDx97tRP9fxF1/view?usp=sharing"
+MARKET_LINK = "https://drive.google.com/file/d/1JaNhwQTcYOZ-tpP_ZwHXHtNzo-GpW-TO/view?usp=sharing"
 
 # =========================
 # Helpers — data processing
@@ -860,3 +860,4 @@ with tab3:
         st.warning("No trade history to display.")
 
 # Auto-refresh is handled by the check_auto_refresh() function at the top
+
