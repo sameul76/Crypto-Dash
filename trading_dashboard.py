@@ -704,29 +704,104 @@ with st.sidebar:
     st.markdown("---")
     open_positions_df = calculate_open_positions(trades_df, market_df) if not trades_df.empty else pd.DataFrame()
     if not open_positions_df.empty:
-        st.markdown("**Open Positions**")
-        for _, pos in open_positions_df.iterrows():
+        st.markdown("**📊 Open Positions**")
+        
+        # Sort by P&L descending (best performers first)
+        sorted_positions = open_positions_df.sort_values("Unrealized P&L ($)", ascending=False)
+        
+        for _, pos in sorted_positions.iterrows():
             pnl = pos["Unrealized P&L ($)"]
-            color = "#16a34a" if pnl >= 0 else "#ef4444"
+            pnl_pct = ((pos["Current Price"] - pos["Avg. Entry Price"]) / pos["Avg. Entry Price"] * 100) if pos["Avg. Entry Price"] != 0 else 0
+            
+            # Color coding
+            if pnl >= 0:
+                color = "#16a34a"
+                pnl_icon = "📈"
+            else:
+                color = "#ef4444"  
+                pnl_icon = "📉"
+            
             asset_name = pos["Asset"]
             cur_price = pos["Current Price"]
-            pf = ".8f" if cur_price < 0.001 else ".6f" if cur_price < 1 else ".2f"
+            pf = ".8f" if cur_price < 0.001 else ".6f" if cur_price < 1 else ".4f"
             avg_price = pos["Avg. Entry Price"]
-            epf = ".8f" if avg_price < 0.001 else ".6f" if avg_price < 1 else ".2f"
+            epf = ".8f" if avg_price < 0.001 else ".6f" if avg_price < 1 else ".4f"
             open_time = pos.get("Open Time", "N/A")
+            quantity = pos["Quantity"]
             
+            # Position card with better structure and alignment
             st.markdown(
-                f"<div style='display:flex;justify-content:space-between;'>"
-                f"<span style='color:{color};font-weight:700'>{asset_name}</span>"
-                f"<span style='font-weight:700'>${cur_price:{pf}}</span></div>",
-                unsafe_allow_html=True,
+                f"""
+                <div style='background-color: {"rgba(22,163,74,0.1)" if pnl >= 0 else "rgba(239,68,68,0.1)"}; 
+                           border-left: 4px solid {color}; 
+                           padding: 0.75rem; 
+                           margin: 0.5rem 0; 
+                           border-radius: 0.25rem;'>
+                    
+                    <!-- Asset and Performance Row -->
+                    <div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;'>
+                        <span style='font-weight: 700; font-size: 0.9rem;'>{asset_name}</span>
+                        <span style='color: {color}; font-weight: 700; font-size: 0.85rem;'>{pnl_icon} {pnl_pct:+.1f}%</span>
+                    </div>
+                    
+                    <!-- Time and Quantity Row -->
+                    <div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;'>
+                        <div style='display: flex; align-items: center;'>
+                            <span style='font-size: 0.7rem; color: #888; background-color: rgba(128,128,128,0.1); 
+                                        padding: 0.15rem 0.4rem; border-radius: 0.25rem; font-weight: 600;'>
+                                ⏰ {open_time}
+                            </span>
+                        </div>
+                        <span style='font-size: 0.75rem; color: #666; font-weight: 500;'>Qty: {quantity:.4f}</span>
+                    </div>
+                    
+                    <!-- Price Information Row -->
+                    <div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem;'>
+                        <span style='font-size: 0.75rem; color: #666;'>Current: <strong>${cur_price:{pf}}</strong></span>
+                        <span style='font-size: 0.75rem; color: #666;'>Entry: <strong>${avg_price:{epf}}</strong></span>
+                    </div>
+                    
+                    <!-- P&L Row -->
+                    <div style='text-align: center; padding-top: 0.3rem; border-top: 1px solid rgba(128,128,128,0.2);'>
+                        <span style='color: {color}; font-weight: 700; font-size: 0.8rem;'>P&L: ${pnl:+.4f}</span>
+                    </div>
+                    
+                </div>
+                """, 
+                unsafe_allow_html=True
             )
-            st.caption(
-                f"Qty: {pos['Quantity']:.4f} | Entry: ${avg_price:{epf}} | {open_time} | P&L: ${pnl:.2f}"
-            )
+        
+        # Summary stats
+        total_pnl = sorted_positions["Unrealized P&L ($)"].sum()
+        total_value = sorted_positions["Current Value ($)"].sum()
+        winners = len(sorted_positions[sorted_positions["Unrealized P&L ($)"] > 0])
+        total_positions = len(sorted_positions)
+        
+        st.markdown("---")
+        st.markdown(
+            f"""
+            <div style='text-align: center; padding: 0.5rem; background-color: rgba(128,128,128,0.1); border-radius: 0.25rem; margin-top: 0.5rem;'>
+                <div style='font-size: 0.8rem; color: {"#16a34a" if total_pnl >= 0 else "#ef4444"}; font-weight: 600;'>
+                    Total P&L: ${total_pnl:+.2f}
+                </div>
+                <div style='font-size: 0.7rem; color: #666; margin-top: 0.25rem;'>
+                    {winners}/{total_positions} winning | ${total_value:.2f} total value
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
     else:
-        st.markdown("**Open Positions**")
-        st.caption("No open positions")
+        st.markdown("**📊 Open Positions**")
+        st.markdown(
+            """
+            <div style='text-align: center; padding: 1rem; background-color: rgba(128,128,128,0.05); 
+                       border-radius: 0.25rem; color: #666; font-style: italic;'>
+                No open positions
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
 
 # ========= Tabs =========
 tab1, tab2, tab3 = st.tabs(["📈 Price & Trades", "💰 P&L Analysis", "📜 Trade History"])
