@@ -23,15 +23,40 @@ import pyarrow  # noqa: F401 (ensures pyarrow engine is available)
 st.set_page_config(page_title="Crypto Trading Strategy", layout="wide")
 
 # =========================
-# Auto-Refresh Setup
+# Auto-Refresh
 # =========================
-REFRESH_INTERVAL = 300  # 5 minutes in seconds
+REFRESH_INTERVAL = 300  # seconds
 
-# Initialize session state for auto-refresh
-if 'last_refresh' not in st.session_state:
+# Initialize session state
+if "last_refresh" not in st.session_state:
     st.session_state.last_refresh = time.time()
-if 'auto_refresh_enabled' not in st.session_state:
+if "auto_refresh_enabled" not in st.session_state:
     st.session_state.auto_refresh_enabled = True
+
+# Real auto-refresh: streamlit-autorefresh if available; fallback to <meta> refresh
+def enable_autorefresh(seconds: int):
+    try:
+        from streamlit_autorefresh import st_autorefresh  # pip install streamlit-autorefresh
+        if st.session_state.auto_refresh_enabled:
+            # This schedules a rerun on the client every N ms
+            st_autorefresh(interval=seconds * 1000, key="auto_refresh_tick")
+    except Exception:
+        # Fallback: meta refresh reloads the page
+        if st.session_state.auto_refresh_enabled:
+            st.markdown(
+                f"<meta http-equiv='refresh' content='{seconds}'>",
+                unsafe_allow_html=True,
+            )
+
+# Call it once at the top of the app
+enable_autorefresh(REFRESH_INTERVAL)
+
+# Helper for countdown display
+def seconds_since_last_run() -> float:
+    return time.time() - st.session_state.last_refresh
+
+# Update the “last_refresh” timestamp on *every* run (so the countdown resets after each rerun)
+st.session_state.last_refresh = time.time()
 
 DEFAULT_ASSET = "GIGA-USD"
 
@@ -355,12 +380,20 @@ def check_auto_refresh():
     current_time = time.time()
     time_since_refresh = current_time - st.session_state.get('last_refresh', 0)
     
-    if st.session_state.get('auto_refresh_enabled', False) and time_since_refresh >= REFRESH_INTERVAL:
-        st.session_state.last_refresh = current_time
-        st.cache_data.clear()
-        st.rerun()
-    
-    return time_since_refresh
+    if st.session_state.get("auto_refresh_enabled", True):
+    elapsed = seconds_since_last_run()
+    time_until = max(0, REFRESH_INTERVAL - int(elapsed))
+    m, s = divmod(time_until, 60)
+    st.markdown(
+        f"<p style='text-align:center;font-size:0.8em;color:#4CAF50;'>⏱️ Next refresh: {m:02d}:{s:02d}</p>",
+        unsafe_allow_html=True,
+    )
+else:
+    st.markdown(
+        "<p style='text-align:center;font-size:0.8em;color:#888;'>Auto-refresh disabled</p>",
+        unsafe_allow_html=True,
+    )
+
 
 time_since_refresh = check_auto_refresh()
 
@@ -814,6 +847,7 @@ with tab3:
         st.warning("No trade history to display.")
 
 # Auto-refresh is handled by the check_auto_refresh() function at the top
+
 
 
 
