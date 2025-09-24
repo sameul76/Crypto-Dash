@@ -16,7 +16,7 @@ getcontext().prec = 30  # precision for Decimal math
 
 # ---- Google Drive links (update if files move) ----
 TRADES_LINK = "https://drive.google.com/file/d/1hyM37eafLgvMo8RJDtw9GSEdZ-LQ05ks/view?usp=sharing"
-MARKET_LINK = "https://drive.google.com/file/d/17ASJZw2zZ0oZweuiN62uDx97tRP9fxF1/view?usp=sharing"
+MARKET_LINK = "https://drive.google.com/file/d/1JaNhwQTcYOZ-tpP_ZwHXHtNzo-GpW-TO/view?usp=drive_link"
 
 DEFAULT_ASSET = "GIGA-USD"
 REFRESH_INTERVAL = 300  # seconds
@@ -943,3 +943,4 @@ with tab3:
             )
         else:
             st.info("No open positions.")
+
