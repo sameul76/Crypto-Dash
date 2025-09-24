@@ -14,6 +14,85 @@ from decimal import Decimal, getcontext
 st.set_page_config(page_title="Crypto Trading Strategy", layout="wide")
 getcontext().prec = 30  # precision for Decimal math
 
+# ========= Theme Management =========
+def apply_theme():
+    theme = st.session_state.get("theme", "light")
+    if theme == "dark":
+        st.markdown("""
+        <style>
+        .stApp {
+            background-color: #0E1117;
+            color: #FAFAFA;
+        }
+        .stSidebar {
+            background-color: #1E1E1E;
+        }
+        .metric-card {
+            background-color: #262730;
+            padding: 1rem;
+            border-radius: 0.5rem;
+            border: 1px solid #3B4252;
+        }
+        .stExpander {
+            background-color: #262730;
+            border: 1px solid #3B4252;
+        }
+        .stSelectbox > div > div {
+            background-color: #262730;
+            color: #FAFAFA;
+        }
+        /* Mobile responsive adjustments */
+        @media (max-width: 768px) {
+            .stSidebar {
+                width: 100% !important;
+            }
+            .main .block-container {
+                padding-top: 2rem;
+                padding-left: 1rem;
+                padding-right: 1rem;
+            }
+            .stMetric {
+                font-size: 0.8rem;
+            }
+            .stMetric > div {
+                font-size: 0.7rem;
+            }
+        }
+        </style>
+        """, unsafe_allow_html=True)
+    else:
+        st.markdown("""
+        <style>
+        .stApp {
+            background-color: #FFFFFF;
+            color: #262626;
+        }
+        .metric-card {
+            background-color: #F8F9FA;
+            padding: 1rem;
+            border-radius: 0.5rem;
+            border: 1px solid #E9ECEF;
+        }
+        /* Mobile responsive adjustments */
+        @media (max-width: 768px) {
+            .stSidebar {
+                width: 100% !important;
+            }
+            .main .block-container {
+                padding-top: 2rem;
+                padding-left: 1rem;
+                padding-right: 1rem;
+            }
+            .stMetric {
+                font-size: 0.8rem;
+            }
+            .stMetric > div {
+                font-size: 0.7rem;
+            }
+        }
+        </style>
+        """, unsafe_allow_html=True)
+
 # ---- Google Drive links (update if files move) ----
 TRADES_LINK = "https://drive.google.com/file/d/1hyM37eafLgvMo8RJDtw9GSEdZ-LQ05ks/view?usp=sharing"
 MARKET_LINK = "https://drive.google.com/file/d/1JaNhwQTcYOZ-tpP_ZwHXHtNzo-GpW-TO/view?usp=drive_link"
@@ -26,6 +105,8 @@ if "last_refresh" not in st.session_state:
     st.session_state.last_refresh = time.time()
 if "auto_refresh_enabled" not in st.session_state:
     st.session_state.auto_refresh_enabled = True
+if "theme" not in st.session_state:
+    st.session_state.theme = "light"
 
 
 # ========= Helpers =========
@@ -280,6 +361,7 @@ def calculate_open_positions(trades_df: pd.DataFrame, market_df: pd.DataFrame) -
         return pd.DataFrame()
 
     positions = {}
+    position_open_times = {}  # Track when each position first opened
     tdf = trades_df.copy()
     tdf["__parsed_ts__"] = _parsed_ts(tdf["timestamp"])
     tdf = tdf.sort_values("__parsed_ts__").drop(columns="__parsed_ts__")
@@ -289,11 +371,14 @@ def calculate_open_positions(trades_df: pd.DataFrame, market_df: pd.DataFrame) -
         action = str(row.get("unified_action", "")).lower().strip()
         qty = row.get("quantity", Decimal(0))
         price = row.get("price", Decimal(0))
+        timestamp = row.get("timestamp", "")
 
         if asset not in positions:
             positions[asset] = {"quantity": Decimal(0), "cost": Decimal(0)}
 
         if action in ["buy", "open"]:
+            if positions[asset]["quantity"] == 0:  # First buy for this position
+                position_open_times[asset] = timestamp
             positions[asset]["cost"] += qty * price
             positions[asset]["quantity"] += qty
         elif action in ["sell", "close"]:
@@ -302,6 +387,10 @@ def calculate_open_positions(trades_df: pd.DataFrame, market_df: pd.DataFrame) -
                 sell_qty = min(qty, positions[asset]["quantity"])
                 positions[asset]["cost"] -= avg_cost * sell_qty
                 positions[asset]["quantity"] -= sell_qty
+                if positions[asset]["quantity"] <= Decimal("1e-9"):
+                    # Position closed, remove open time
+                    if asset in position_open_times:
+                        del position_open_times[asset]
 
     open_positions = []
     for asset, data in positions.items():
@@ -314,6 +403,17 @@ def calculate_open_positions(trades_df: pd.DataFrame, market_df: pd.DataFrame) -
                 avg_entry = data["cost"] / data["quantity"]
                 current_value = latest_price * data["quantity"]
                 unrealized = current_value - data["cost"]
+                
+                # Format open time
+                open_time_str = "N/A"
+                if asset in position_open_times:
+                    try:
+                        open_ts = pd.to_datetime(position_open_times[asset], errors="coerce")
+                        if pd.notna(open_ts):
+                            open_time_str = open_ts.strftime("%H:%M")
+                    except:
+                        pass
+                
                 open_positions.append(
                     {
                         "Asset": asset,
@@ -322,10 +422,61 @@ def calculate_open_positions(trades_df: pd.DataFrame, market_df: pd.DataFrame) -
                         "Current Price": float(latest_price),
                         "Current Value ($)": float(current_value),
                         "Unrealized P&L ($)": float(unrealized),
+                        "Open Time": open_time_str,
                     }
                 )
 
     return pd.DataFrame(open_positions)
+
+
+def analyze_trade_performance_by_reason(trades_df: pd.DataFrame) -> pd.DataFrame:
+    """Analyze trading performance by signal/reason"""
+    if trades_df is None or trades_df.empty or "reason" not in trades_df.columns:
+        return pd.DataFrame()
+
+    # Get matched trades for analysis
+    matched_df, _ = match_trades_fifo(trades_df)
+    if matched_df.empty:
+        return pd.DataFrame()
+
+    # Group by buy and sell reasons
+    performance_data = []
+    
+    # Analyze by buy reason
+    if "Reason Buy" in matched_df.columns:
+        buy_analysis = matched_df.groupby("Reason Buy").agg({
+            "P&L ($)": ["count", "sum", "mean", lambda x: (x > 0).sum()],
+            "P&L %": "mean"
+        }).round(4)
+        
+        buy_analysis.columns = ["Total Trades", "Total P&L ($)", "Avg P&L ($)", "Wins", "Avg P&L (%)"]
+        buy_analysis["Win Rate (%)"] = (buy_analysis["Wins"] / buy_analysis["Total Trades"] * 100).round(1)
+        buy_analysis["Signal Type"] = "Buy Signal"
+        buy_analysis["Reason"] = buy_analysis.index
+        buy_analysis = buy_analysis.reset_index(drop=True)
+        performance_data.append(buy_analysis)
+    
+    # Analyze by sell reason  
+    if "Reason Sell" in matched_df.columns:
+        sell_analysis = matched_df.groupby("Reason Sell").agg({
+            "P&L ($)": ["count", "sum", "mean", lambda x: (x > 0).sum()],
+            "P&L %": "mean"
+        }).round(4)
+        
+        sell_analysis.columns = ["Total Trades", "Total P&L ($)", "Avg P&L ($)", "Wins", "Avg P&L (%)"]
+        sell_analysis["Win Rate (%)"] = (sell_analysis["Wins"] / sell_analysis["Total Trades"] * 100).round(1)
+        sell_analysis["Signal Type"] = "Sell Signal"
+        sell_analysis["Reason"] = sell_analysis.index
+        sell_analysis = sell_analysis.reset_index(drop=True)
+        performance_data.append(sell_analysis)
+    
+    if performance_data:
+        result = pd.concat(performance_data, ignore_index=True)
+        result = result[["Signal Type", "Reason", "Total Trades", "Win Rate (%)", 
+                        "Total P&L ($)", "Avg P&L ($)", "Avg P&L (%)"]]
+        return result.sort_values(["Signal Type", "Total P&L ($)"], ascending=[True, False])
+    
+    return pd.DataFrame()
 
 
 def match_trades_fifo(trades_df: pd.DataFrame):
@@ -394,6 +545,9 @@ def match_trades_fifo(trades_df: pd.DataFrame):
 # ========= Load + maybe refresh =========
 st.markdown("## Crypto Trading Strategy")
 st.caption("ML Signals with Price-Based Exit Logic (timestamps read exactly as stored)")
+
+# Apply theme
+apply_theme()
 
 trades_df, market_df = load_data(TRADES_LINK, MARKET_LINK)
 elapsed = maybe_auto_refresh()
@@ -510,13 +664,18 @@ with st.expander("🔍 Deep Dive Debug", expanded=False):
 with st.sidebar:
     st.markdown("<h1 style='text-align:center;'>Crypto Strategy</h1>", unsafe_allow_html=True)
 
-    c1, c2 = st.columns(2)
-    with c1:
+    # Theme toggle and refresh controls
+    col1, col2, col3 = st.columns([1, 1, 1])
+    with col1:
+        if st.button("🌙" if st.session_state.theme == "light" else "☀️", help="Toggle theme"):
+            st.session_state.theme = "dark" if st.session_state.theme == "light" else "light"
+            st.rerun()
+    with col2:
         st.session_state.auto_refresh_enabled = st.toggle(
-            "🔄 Auto-Refresh (5min)", value=st.session_state.get("auto_refresh_enabled", True)
+            "🔄", value=st.session_state.get("auto_refresh_enabled", True), help="Auto-Refresh (5min)"
         )
-    with c2:
-        if st.button("Force Fresh Load"):
+    with col3:
+        if st.button("↻", help="Force refresh"):
             st.cache_data.clear()
             st.session_state.last_refresh = time.time()
             st.rerun()
@@ -554,6 +713,8 @@ with st.sidebar:
             pf = ".8f" if cur_price < 0.001 else ".6f" if cur_price < 1 else ".2f"
             avg_price = pos["Avg. Entry Price"]
             epf = ".8f" if avg_price < 0.001 else ".6f" if avg_price < 1 else ".2f"
+            open_time = pos.get("Open Time", "N/A")
+            
             st.markdown(
                 f"<div style='display:flex;justify-content:space-between;'>"
                 f"<span style='color:{color};font-weight:700'>{asset_name}</span>"
@@ -561,7 +722,7 @@ with st.sidebar:
                 unsafe_allow_html=True,
             )
             st.caption(
-                f"Qty: {pos['Quantity']:.4f} | Entry: ${avg_price:{epf}} | P&L: ${pnl:.2f}"
+                f"Qty: {pos['Quantity']:.4f} | Entry: ${avg_price:{epf}} | {open_time} | P&L: ${pnl:.2f}"
             )
     else:
         st.markdown("**Open Positions**")
@@ -717,28 +878,30 @@ with tab1:
 
                     fig.update_layout(
                         title=f"{selected_asset} — Price & Trades ({range_choice})",
-                        template="plotly_white",
+                        template="plotly_dark" if st.session_state.theme == "dark" else "plotly_white",
                         xaxis_rangeslider_visible=False,
                         xaxis=dict(
                             title="Time",
                             type="date",
                             tickformat=tick_format,
                             showgrid=True,
-                            gridcolor="rgba(128,128,128,0.1)",
+                            gridcolor="rgba(59,66,82,0.3)" if st.session_state.theme == "dark" else "rgba(128,128,128,0.1)",
                             tickangle=-45,
                         ),
                         yaxis=dict(
                             title="Price (USD)",
                             tickformat=".8f" if last_price < 0.001 else ".6f" if last_price < 1 else ".4f",
                             showgrid=True,
-                            gridcolor="rgba(128,128,128,0.1)",
+                            gridcolor="rgba(59,66,82,0.3)" if st.session_state.theme == "dark" else "rgba(128,128,128,0.1)",
                             range=[y_min, y_max],
                         ),
                         hovermode="x unified",
                         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
                         height=750,
                         margin=dict(l=60, r=20, t=80, b=80),
-                        plot_bgcolor="rgba(250,250,250,0.8)",
+                        plot_bgcolor="rgba(14,17,23,1)" if st.session_state.theme == "dark" else "rgba(250,250,250,0.8)",
+                        paper_bgcolor="rgba(14,17,23,1)" if st.session_state.theme == "dark" else "rgba(255,255,255,1)",
+                        font_color="#FAFAFA" if st.session_state.theme == "dark" else "#262626",
                     )
 
                     st.plotly_chart(
@@ -816,29 +979,79 @@ with tab2:
                 )
             )
             fig_pnl.add_hline(y=0, line_dash="dash", line_color="gray", annotation_text="Break Even")
+            
+            # Apply theme colors to chart
+            chart_bg = "rgba(14,17,23,1)" if st.session_state.theme == "dark" else "rgba(255,255,255,1)"
+            chart_grid = "rgba(59,66,82,0.3)" if st.session_state.theme == "dark" else "rgba(128,128,128,0.1)"
+            chart_text = "#FAFAFA" if st.session_state.theme == "dark" else "#262626"
+            
             fig_pnl.update_layout(
                 title="Total Portfolio P&L",
-                template="plotly_white",
+                template="plotly_dark" if st.session_state.theme == "dark" else "plotly_white",
                 yaxis_title="P&L (USD)",
                 xaxis_title="Date",
                 hovermode="x unified",
+                plot_bgcolor=chart_bg,
+                paper_bgcolor=chart_bg,
+                font_color=chart_text,
+                xaxis=dict(gridcolor=chart_grid),
+                yaxis=dict(gridcolor=chart_grid),
             )
             st.plotly_chart(fig_pnl, use_container_width=True)
 
+        # Mobile responsive layout for P&L by asset
         st.markdown("---")
-        st.markdown("### Realized P&L by Asset")
-        if pnl_summary:
-            total_pnl = sum(p for p in pnl_summary.values() if pd.notna(p))
-            st.metric("Overall P&L", f"${total_pnl:,.2f}")
-            for asset, pnl in sorted(pnl_summary.items(), key=lambda kv: kv[1], reverse=True):
-                color = "#10b981" if pnl >= 0 else "#ef4444"
-                st.markdown(
-                    f"<div style='display:flex;justify-content:space-between'>"
-                    f"<span>{asset}</span><span style='color:{color};font-weight:600'>${pnl:,.2f}</span></div>",
-                    unsafe_allow_html=True,
+        col_left, col_right = st.columns([1, 1])
+        
+        with col_left:
+            st.markdown("### Realized P&L by Asset")
+            if pnl_summary:
+                total_pnl = sum(p for p in pnl_summary.values() if pd.notna(p))
+                st.metric("Overall P&L", f"${total_pnl:,.2f}")
+                for asset, pnl in sorted(pnl_summary.items(), key=lambda kv: kv[1], reverse=True):
+                    color = "#10b981" if pnl >= 0 else "#ef4444"
+                    st.markdown(
+                        f"<div style='display:flex;justify-content:space-between'>"
+                        f"<span>{asset}</span><span style='color:{color};font-weight:600'>${pnl:,.2f}</span></div>",
+                        unsafe_allow_html=True,
+                    )
+            else:
+                st.info("No realized P&L yet.")
+        
+        with col_right:
+            st.markdown("### Signal Performance Analysis")
+            attribution_df = analyze_trade_performance_by_reason(trades_df)
+            if not attribution_df.empty:
+                st.dataframe(
+                    attribution_df,
+                    column_config={
+                        "Signal Type": st.column_config.TextColumn(width="small"),
+                        "Reason": st.column_config.TextColumn(width="medium"),
+                        "Total Trades": st.column_config.NumberColumn(width="small"),
+                        "Win Rate (%)": st.column_config.NumberColumn(format="%.1f%%", width="small"),
+                        "Total P&L ($)": st.column_config.NumberColumn(format="$%.4f"),
+                        "Avg P&L ($)": st.column_config.NumberColumn(format="$%.4f"),
+                        "Avg P&L (%)": st.column_config.NumberColumn(format="%.2f%%"),
+                    },
+                    use_container_width=True,
+                    hide_index=True,
                 )
-        else:
-            st.info("No realized P&L yet.")
+                
+                # Best and worst performing signals
+                if len(attribution_df) > 0:
+                    best_signal = attribution_df.loc[attribution_df["Total P&L ($)"].idxmax()]
+                    worst_signal = attribution_df.loc[attribution_df["Total P&L ($)"].idxmin()]
+                    
+                    st.markdown("**Top Performer:** " + 
+                              f"{best_signal['Reason']} ({best_signal['Signal Type']}) - " +
+                              f"${best_signal['Total P&L ($)']:.2f} / {best_signal['Win Rate (%)']:.1f}% WR")
+                    
+                    if len(attribution_df) > 1:
+                        st.markdown("**Worst Performer:** " + 
+                                  f"{worst_signal['Reason']} ({worst_signal['Signal Type']}) - " +
+                                  f"${worst_signal['Total P&L ($)']:.2f} / {worst_signal['Win Rate (%)']:.1f}% WR")
+            else:
+                st.info("No signal attribution data available. Make sure your trades have 'reason' field populated.")
 
 # ----- TAB 3: Trade History -----
 with tab3:
