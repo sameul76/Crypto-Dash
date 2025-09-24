@@ -579,17 +579,18 @@ with st.sidebar:
 tab1, tab2, tab3 = st.tabs(["📈 Price & Trades", "💰 P&L Analysis", "📜 Trade History"])
 
 with tab1:
+    # List all assets from your market_df
     assets = sorted(market_df["asset"].dropna().astype(str).unique()) if (not market_df.empty and "asset" in market_df.columns) else []
     if assets:
-        # --- Select asset (stateLESS) ---
+        # --- Asset select (stateless) ---
         default_index = assets.index(DEFAULT_ASSET) if DEFAULT_ASSET in assets else 0
         selected_asset = st.selectbox(
             "Select Asset to View",
             assets,
-            index=default_index,        # no key here
+            index=default_index
         )
 
-        # --- Select range (you can keep this one with a key if you want) ---
+        # --- Range select ---
         range_choice = st.selectbox(
             "Select Date Range",
             ["4 hours", "12 hours", "1 day", "3 days", "7 days", "30 days", "All"],
@@ -597,46 +598,42 @@ with tab1:
             key="range_select_main"
         )
 
-        # (Optional) quick check
+        # Debug caption
         st.caption(f"Active asset: **{selected_asset}**")
 
-        # everything below unchanged, but now uses selected_asset directly
+        # --- Slice market data ---
         asset_market_data = market_df[market_df['asset'] == selected_asset].copy() if not market_df.empty else pd.DataFrame()
-        ...
-        fig.update_layout(title=f"{selected_asset} — Price & Trades ({range_choice})", ...)
-        st.plotly_chart(
-            fig,
-            use_container_width=True,
-            config={'displayModeBar': True, 'modeBarButtonsToAdd': ['drawline','drawopenpath','drawclosedpath'], 'scrollZoom': True},
-            key=f"price_chart_{selected_asset}_{range_choice.replace(' ', '_')}"  # keep unique key so Plotly remounts
-        )
-
-
         if not asset_market_data.empty:
             last_price = asset_market_data.sort_values('timestamp').iloc[-1]['close']
-            if last_price < 0.001: price_format = ",.8f"
-            elif last_price < 1:    price_format = ",.6f"
-            else:                   price_format = ",.2f"
+            if last_price < 0.001:
+                price_format = ",.8f"
+            elif last_price < 1:
+                price_format = ",.6f"
+            else:
+                price_format = ",.2f"
             st.metric(f"Last Price for {selected_asset}", f"${last_price:{price_format}}")
 
-        # -------- your “Data Resolution Inspector” block stays the same -------- #
-
         st.markdown("---")
-
         df = asset_market_data.sort_values("timestamp")
         if not df.empty:
             end_date = df["timestamp"].max()
-            if   range_choice == "4 hours":  start_date = end_date - timedelta(hours=4)
-            elif range_choice == "12 hours": start_date = end_date - timedelta(hours=12)
-            elif range_choice == "1 day":    start_date = end_date - timedelta(days=1)
-            elif range_choice == "3 days":   start_date = end_date - timedelta(days=3)
-            elif range_choice == "7 days":   start_date = end_date - timedelta(days=7)
-            elif range_choice == "30 days":  start_date = end_date - timedelta(days=30)
-            else:                            start_date = df["timestamp"].min()
+            if range_choice == "4 hours":
+                start_date = end_date - timedelta(hours=4)
+            elif range_choice == "12 hours":
+                start_date = end_date - timedelta(hours=12)
+            elif range_choice == "1 day":
+                start_date = end_date - timedelta(days=1)
+            elif range_choice == "3 days":
+                start_date = end_date - timedelta(days=3)
+            elif range_choice == "7 days":
+                start_date = end_date - timedelta(days=7)
+            elif range_choice == "30 days":
+                start_date = end_date - timedelta(days=30)
+            else:
+                start_date = df["timestamp"].min()
 
             vis = df[(df["timestamp"] >= start_date) & (df["timestamp"] <= end_date)].copy()
             if not vis.empty:
-
                 st.info(f"Showing {len(vis):,} candles from {start_date.strftime('%Y-%m-%d %H:%M')} to {end_date.strftime('%Y-%m-%d %H:%M')}")
 
                 price_range = vis['high'].max() - vis['low'].min()
@@ -648,57 +645,91 @@ with tab1:
 
                 fig = go.Figure()
                 fig.add_trace(go.Candlestick(
-                    x=vis["timestamp"], open=vis["open"], high=vis["high"], low=vis["low"], close=vis["close"],
+                    x=vis["timestamp"],
+                    open=vis["open"],
+                    high=vis["high"],
+                    low=vis["low"],
+                    close=vis["close"],
                     name=selected_asset,
-                    increasing_line_color='#26a69a', decreasing_line_color='#ef5350',
-                    increasing_fillcolor='rgba(38,166,154,0.5)', decreasing_fillcolor='rgba(239,83,80,0.5)',
+                    increasing_line_color='#26a69a',
+                    decreasing_line_color='#ef5350',
+                    increasing_fillcolor='rgba(38,166,154,0.5)',
+                    decreasing_fillcolor='rgba(239,83,80,0.5)',
                     line=dict(width=1)
                 ))
 
-                # --- ML dots (unchanged, but using vis) ---
+                # Add ML signal markers if available
                 if 'p_up' in vis.columns and 'p_down' in vis.columns:
                     prob_data = vis.dropna(subset=['p_up', 'p_down'])
                     if not prob_data.empty:
                         prob_data = prob_data.copy()
                         prob_data['confidence'] = abs(prob_data['p_up'] - prob_data['p_down'])
                         prob_data['signal_strength'] = prob_data['confidence'] * 100
-                        colors = ['#ff6b6b' if p_down > p_up else '#51cf66'
-                                  for p_up, p_down in zip(prob_data['p_up'], prob_data['p_down'])]
+                        colors = [
+                            '#ff6b6b' if p_down > p_up else '#51cf66'
+                            for p_up, p_down in zip(prob_data['p_up'], prob_data['p_down'])
+                        ]
                         fig.add_trace(go.Scatter(
-                            x=prob_data["timestamp"], y=prob_data["close"], mode='markers',
-                            marker=dict(size=prob_data['signal_strength'] / 5 + 3, color=colors, opacity=0.7, line=dict(width=1, color='white')),
+                            x=prob_data["timestamp"],
+                            y=prob_data["close"],
+                            mode='markers',
+                            marker=dict(
+                                size=prob_data['signal_strength'] / 5 + 3,
+                                color=colors,
+                                opacity=0.7,
+                                line=dict(width=1, color='white')
+                            ),
                             name='ML Signals',
                             customdata=list(zip(prob_data['p_up'], prob_data['p_down'], prob_data['confidence'])),
-                            hovertemplate='<b>ML Signal</b><br>Time: %{x|%Y-%m-%d %H:%M}'
-                                          '<br>Price: $%{y:.6f}'
-                                          '<br>P(Up): %{customdata[0]:.3f}'
-                                          '<br>P(Down): %{customdata[1]:.3f}'
-                                          '<br>Confidence: %{customdata[2]:.3f}<extra></extra>'
+                            hovertemplate=(
+                                '<b>ML Signal</b><br>'
+                                'Time: %{x|%Y-%m-%d %H:%M}<br>'
+                                'Price: $%{y:.6f}<br>'
+                                'P(Up): %{customdata[0]:.3f}<br>'
+                                'P(Down): %{customdata[1]:.3f}<br>'
+                                'Confidence: %{customdata[2]:.3f}<extra></extra>'
+                            )
                         ))
-
-                # --- trades overlay (unchanged logic) ---
 
                 tick_format = '%H:%M' if range_choice in ["4 hours", "12 hours"] else '%m/%d %H:%M'
                 fig.update_layout(
                     title=f"{selected_asset} — Price & Trades ({range_choice})",
                     template="plotly_white",
                     xaxis_rangeslider_visible=False,
-                    xaxis=dict(title="Time", type='date', tickformat=tick_format, showgrid=True, gridcolor='rgba(128,128,128,0.1)', tickangle=-45),
-                    yaxis=dict(title="Price (USD)",
-                               tickformat='.8f' if vis['close'].iloc[-1] < 0.001 else '.6f' if vis['close'].iloc[-1] < 1 else '.4f',
-                               showgrid=True, gridcolor='rgba(128,128,128,0.1)',
-                               range=[y_min_range, y_max_range]),
+                    xaxis=dict(
+                        title="Time",
+                        type='date',
+                        tickformat=tick_format,
+                        showgrid=True,
+                        gridcolor='rgba(128,128,128,0.1)',
+                        tickangle=-45
+                    ),
+                    yaxis=dict(
+                        title="Price (USD)",
+                        tickformat=(
+                            '.8f' if vis['close'].iloc[-1] < 0.001
+                            else '.6f' if vis['close'].iloc[-1] < 1
+                            else '.4f'
+                        ),
+                        showgrid=True,
+                        gridcolor='rgba(128,128,128,0.1)',
+                        range=[y_min_range, y_max_range]
+                    ),
                     hovermode="x unified",
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
-                    height=750, margin=dict(l=60, r=20, t=80, b=80),
+                    height=750,
+                    margin=dict(l=60, r=20, t=80, b=80),
                     plot_bgcolor='rgba(250,250,250,0.8)'
                 )
 
-                # >>> CRITICAL: unique key per asset *and* range <<<
                 st.plotly_chart(
                     fig,
                     use_container_width=True,
-                    config={'displayModeBar': True, 'modeBarButtonsToAdd': ['drawline','drawopenpath','drawclosedpath'], 'scrollZoom': True},
+                    config={
+                        'displayModeBar': True,
+                        'modeBarButtonsToAdd': ['drawline', 'drawopenpath', 'drawclosedpath'],
+                        'scrollZoom': True
+                    },
                     key=f"price_chart_{selected_asset}_{range_choice.replace(' ', '_')}"
                 )
             else:
@@ -707,6 +738,7 @@ with tab1:
             st.warning(f"No market data found for {selected_asset}.")
     else:
         st.warning("Market data not loaded or available.")
+
 
 
 with tab2:
@@ -782,6 +814,7 @@ with tab3:
         st.warning("No trade history to display.")
 
 # Auto-refresh is handled by the check_auto_refresh() function at the top
+
 
 
 
