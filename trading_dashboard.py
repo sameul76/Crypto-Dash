@@ -94,7 +94,7 @@ def apply_theme():
         """, unsafe_allow_html=True)
 
 # ---- Google Drive links (update if files move) ----
-TRADES_LINK = "https://drive.google.com/file/d/1hyM37eafLgvMo8RJDtw9GSEdZ-LQ05ks/view?usp=sharing"
+TRADES_LINK = "https://drive.google.com/file/d/1sZyH06Zy9tN8vOd31JcNDM1JDayImfu3/view?usp=sharing"
 MARKET_LINK = "https://drive.google.com/file/d/1JaNhwQTcYOZ-tpP_ZwHXHtNzo-GpW-TO/view?usp=drive_link"
 
 DEFAULT_ASSET = "GIGA-USD"
@@ -1186,3 +1186,4 @@ with tab3:
             )
         else:
             st.info("No open positions.")
+
