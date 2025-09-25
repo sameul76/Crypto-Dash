@@ -407,138 +407,13 @@ def flag_threshold_violations(trades: pd.DataFrame) -> pd.DataFrame:
     df["revalidated_hint"] = reason_text.str.contains("re-validated") | reason_text.str.contains("revalidated")
     return df
 
-# === Dynamic entry config (defaults for CURRENT policy) ===
+# === Dynamic entry config (for what-if analysis) ===
 DYNAMIC_ENTRY_UI = {
     "confirmation_bounce_pct": 0.0025,   # 0.25% bounce
     "timeout_minutes": 40,               # ~100 cycles @ 20s ≈ 33m; buffer
     "cooldown_minutes": 10,
     "match_window_minutes": 5,
 }
-
-def _meets_entry_signal(row, asset):
-    th = ASSET_THRESHOLDS.get(asset)
-    if th is None: return False, np.nan, np.nan, np.nan
-    pu = pd.to_numeric(row.get("p_up"), errors="coerce")
-    pdn = pd.to_numeric(row.get("p_down"), errors="coerce")
-    if pd.isna(pu) or pd.isna(pdn): return False, pu, pdn, np.nan
-    conf = abs(pu - pdn)
-    ok = (pu > pdn) and (pu >= th["buy_threshold"]) and (conf >= th["min_confidence"])
-    return ok, pu, pdn, conf
-
-def _first_confirmation_window(asset_df, start_idx, bounce_pct, timeout_td):
-    start_ts = pd.to_datetime(asset_df.iloc[start_idx]["timestamp"], errors="coerce")
-    if pd.isna(start_ts): return None, None
-    watch_low = float(asset_df.iloc[start_idx].get("low", np.nan))
-    best_low = watch_low if not pd.isna(watch_low) else np.inf
-
-    for i in range(start_idx, len(asset_df)):
-        row = asset_df.iloc[i]
-        ts = pd.to_datetime(row["timestamp"], errors="coerce")
-        if pd.isna(ts): continue
-        if ts - start_ts > timeout_td: return None, None
-
-        cur_low = float(row.get("low", np.nan))
-        if not pd.isna(cur_low): best_low = min(best_low, cur_low)
-
-        close_px = float(row.get("close", np.nan))
-        if not pd.isna(close_px) and best_low not in (None, np.inf, np.nan):
-            if close_px >= best_low * (1.0 + bounce_pct):
-                return i, best_low
-    return None, None
-
-# FIXED: accepts cfg and uses proper Timedelta
-def identify_missed_entries(market_df: pd.DataFrame, trades_df: pd.DataFrame, cfg: dict | None = None) -> pd.DataFrame:
-    """
-    Find (asset, signal_time, confirm_time, expected_price, pu, pd, confidence) where
-    entry signal + confirmation occurred, but no OPEN/BUY within ±match_window_minutes.
-    """
-    if market_df is None or market_df.empty:
-        return pd.DataFrame()
-    params = cfg or DYNAMIC_ENTRY_UI
-    bounce_pct = float(params["confirmation_bounce_pct"])
-    timeout_td = pd.Timedelta(minutes=int(params["timeout_minutes"]))
-    cooldown_td = pd.Timedelta(minutes=int(params["cooldown_minutes"]))
-    match_td = pd.Timedelta(minutes=int(params["match_window_minutes"]))
-
-    # Prepare trades (only OPEN/BUY)
-    opens = pd.DataFrame()
-    if trades_df is not None and not trades_df.empty:
-        action_col = "action" if "action" in trades_df.columns else ("unified_action" if "unified_action" in trades_df.columns else None)
-        if action_col:
-            mask = trades_df[action_col].astype(str).str.upper().isin(["OPEN", "BUY"])
-            opens = trades_df.loc[mask].copy()
-            if not opens.empty:
-                opens["__t__"] = pd.to_datetime(opens["timestamp"], errors="coerce")
-                if "asset" in opens.columns:
-                    opens["asset"] = opens["asset"].apply(unify_symbol)
-
-    out = []
-    for asset, g in market_df.groupby("asset"):
-        if asset not in ASSET_THRESHOLDS:  # skip non-configured assets
-            continue
-        g = g.copy().sort_values(by="timestamp", key=lambda s: pd.to_datetime(s, errors="coerce")).reset_index(drop=True)
-        g["__t__"] = pd.to_datetime(g["timestamp"], errors="coerce")
-
-        i = 0
-        last_taken_ts = None
-        while i < len(g):
-            row = g.iloc[i]
-            ok, pu, pdn, conf = _meets_entry_signal(row, asset)
-            if not ok:
-                i += 1
-                continue
-
-            confirm_idx, watch_low = _first_confirmation_window(g, i, bounce_pct, timeout_td)
-            if confirm_idx is None:
-                i += 1
-                continue
-
-            sig_ts = g.iloc[i]["__t__"]
-            conf_row = g.iloc[confirm_idx]
-            conf_ts = conf_row["__t__"]
-            expected_px = float(conf_row.get("close", np.nan))
-
-            if last_taken_ts is not None and conf_ts - last_taken_ts < cooldown_td:
-                i = confirm_idx + 1
-                continue
-
-            taken = False
-            if not opens.empty:
-                o = opens[opens["asset"] == asset]
-                if not o.empty:
-                    delta = (o["__t__"] - conf_ts).abs()
-                    taken = (delta <= match_td).any()
-
-            if not taken:
-                out.append({
-                    "asset": asset,
-                    "signal_time": sig_ts,
-                    "confirm_time": conf_ts,
-                    "expected_price": expected_px,
-                    "watch_low_at_confirm": watch_low,
-                    "p_up_at_signal": float(pu) if pd.notna(pu) else np.nan,
-                    "p_down_at_signal": float(pdn) if pd.notna(pdn) else np.nan,
-                    "confidence_at_signal": float(conf) if pd.notna(conf) else np.nan,
-                    "bounce_pct_used": bounce_pct,
-                    "timeout_minutes_used": int(params["timeout_minutes"]),
-                    "match_window_minutes": int(params["match_window_minutes"]),
-                })
-            else:
-                last_taken_ts = conf_ts
-            i = confirm_idx + 1
-
-    missed = pd.DataFrame(out)
-    if not missed.empty:
-        missed = missed.sort_values("confirm_time", ascending=False)
-    return missed
-
-def enrich_missed(missed_df: pd.DataFrame) -> pd.DataFrame:
-    if missed_df.empty: return missed_df
-    df = missed_df.copy()
-    df["minutes_to_confirm"] = (pd.to_datetime(df["confirm_time"]) - pd.to_datetime(df["signal_time"])).dt.total_seconds() / 60.0
-    df["actual_bounce_pct"] = (df["expected_price"] / df["watch_low_at_confirm"]) - 1.0
-    df["required_bounce_pct"] = df.get("bounce_pct_used", np.nan)
-    return df
 
 # ========= Data loading (cached) =========
 @st.cache_data(ttl=60)
@@ -745,12 +620,10 @@ apply_theme()
 trades_df, market_df = load_data(TRADES_LINK, MARKET_LINK)
 elapsed = maybe_auto_refresh()
 
-# >>> Validation flags and Missed detector (CURRENT policy) <<<
+# >>> Validation flags <<<
 trades_df = flag_threshold_violations(trades_df) if not trades_df.empty else trades_df
-missed_current = identify_missed_entries(market_df, trades_df, DYNAMIC_ENTRY_UI)
-enriched_current = enrich_missed(missed_current)
 
-# NEW: Track positions and identify missed buys/sells
+# >>> Track positions and identify missed buys/sells <<<
 position_history = track_positions_over_time(trades_df) if not trades_df.empty else pd.DataFrame()
 missed_buys_df = identify_missed_buys(market_df, trades_df, position_history, DYNAMIC_ENTRY_UI)
 missed_sells_df = identify_missed_sells(market_df, trades_df, position_history, DYNAMIC_ENTRY_UI)
@@ -812,9 +685,9 @@ with st.sidebar:
     DYNAMIC_ENTRY_TRY["timeout_minutes"] = int(ui_timeout_m)
     DYNAMIC_ENTRY_TRY["match_window_minutes"] = int(ui_match_m)
 
-    # Compute WHAT-IF missed entries
-    missed_try = identify_missed_entries(market_df, trades_df, DYNAMIC_ENTRY_TRY)
-    enriched_try = enrich_missed(missed_try)
+    # Compute WHAT-IF missed buys/sells with updated config
+    missed_buys_try = identify_missed_buys(market_df, trades_df, position_history, DYNAMIC_ENTRY_TRY)
+    missed_sells_try = identify_missed_sells(market_df, trades_df, position_history, DYNAMIC_ENTRY_TRY)
 
 # ========= Debug panel =========
 with st.expander("🔎 Data Freshness Debug", expanded=True):
@@ -1026,28 +899,6 @@ with tab1:
                                               "Confidence: %{customdata[2]:.3f}<extra></extra>",
                             ))
 
-                    # Overlay MISSED confirmations (CURRENT policy) as hollow circles
-                    if not enriched_current.empty:
-                        misses = enriched_current[enriched_current["asset"] == selected_asset].copy()
-                        if not misses.empty:
-                            misses["_t"] = _series_to_utc(misses["confirm_time"])
-                            misses = misses.sort_values("_t")
-                            fig.add_trace(go.Scatter(
-                                x=misses["_t"], y=misses["expected_price"].astype(float),
-                                mode="markers", name="Missed BUY (confirmed)",
-                                marker=dict(symbol="circle-open", size=12, line=dict(width=2)),
-                                customdata=np.stack((
-                                    misses["p_up_at_signal"], misses["p_down_at_signal"],
-                                    misses["confidence_at_signal"], misses["watch_low_at_confirm"],
-                                    misses["expected_price"]
-                                ), axis=-1),
-                                hovertemplate="<b>Missed BUY</b><br>%{x|%Y-%m-%d %H:%M}<br>"
-                                              "Confirm px: $%{customdata[4]:.8f}<br>"
-                                              "Watch low: $%{customdata[3]:.8f}<br>"
-                                              "Pup: %{customdata[0]:.3f}  Pdown: %{customdata[1]:.3f}<br>"
-                                              "Conf: %{customdata[2]:.3f}<extra></extra>",
-                            ))
-
                     fig.update_layout(
                         title=f"{selected_asset} — Price & Trades ({range_choice})",
                         template="plotly_dark" if st.session_state.theme == "dark" else "plotly_white",
@@ -1071,15 +922,12 @@ with tab1:
                     # Quick counts in view window
                     miss_buys_now = 0 if missed_buys_df.empty else len(missed_buys_df[missed_buys_df["asset"]==selected_asset])
                     miss_sells_now = 0 if missed_sells_df.empty else len(missed_sells_df[missed_sells_df["asset"]==selected_asset])
-                    miss_confirmed_now = 0 if enriched_current.empty else len(enriched_current[enriched_current["asset"]==selected_asset])
                     
-                    col1, col2, col3 = st.columns(3)
+                    col1, col2 = st.columns(2)
                     with col1:
                         st.caption(f"Missed BUYs (no position): **{miss_buys_now}**")
                     with col2:
                         st.caption(f"Missed SELLs (in position): **{miss_sells_now}**")
-                    with col3:
-                        st.caption(f"Missed confirmations: **{miss_confirmed_now}**")
 
 # ----- TAB 2: P&L Analysis -----
 with tab2:
@@ -1201,9 +1049,11 @@ with tab5:
     with col2:
         st.metric("Missed SELLs (in position)", f"{len(missed_sells_df):,}")
     with col3:
-        st.metric("Missed Entries (current)", f"{len(missed_current):,}")
+        try_buys = len(missed_buys_try) if 'missed_buys_try' in locals() else 0
+        st.metric("Missed BUYs (what-if)", f"{try_buys:,}")
     with col4:
-        st.metric("Missed Entries (what-if)", f"{len(missed_try):,}")
+        try_sells = len(missed_sells_try) if 'missed_sells_try' in locals() else 0
+        st.metric("Missed SELLs (what-if)", f"{try_sells:,}")
 
     # Filters
     all_assets = set()
@@ -1254,27 +1104,23 @@ with tab5:
             hide_index=True
         )
 
-    # Original missed entries (for reference)
-    if not enriched_current.empty:
-        st.markdown("#### Traditional Missed Entries (confirmation-based)")
-        v = enriched_current[enriched_current["asset"].isin(sel_assets)] if sel_assets else enriched_current
-        vv = v.copy()
-        vv["signal_time"] = pd.to_datetime(vv["signal_time"]).dt.strftime("%Y-%m-%d %H:%M:%S")
-        vv["confirm_time"] = pd.to_datetime(vv["confirm_time"]).dt.strftime("%Y-%m-%d %H:%M:%S")
-        for col in ["expected_price","watch_low_at_confirm","p_up_at_signal","p_down_at_signal","confidence_at_signal","actual_bounce_pct","required_bounce_pct"]:
-            if col in vv.columns: vv[col] = vv[col].astype(float)
-        st.dataframe(
-            vv[["asset","signal_time","confirm_time","expected_price","watch_low_at_confirm","p_up_at_signal","p_down_at_signal","confidence_at_signal","actual_bounce_pct","required_bounce_pct"]],
-            column_config={
-                "expected_price": st.column_config.NumberColumn(format="$%.8f"),
-                "watch_low_at_confirm": st.column_config.NumberColumn(format="$%.8f"),
-                "p_up_at_signal": st.column_config.NumberColumn(format="%.3f"),
-                "p_down_at_signal": st.column_config.NumberColumn(format="%.3f"),
-                "confidence_at_signal": st.column_config.NumberColumn(format="%.3f"),
-                "actual_bounce_pct": st.column_config.NumberColumn(format="%.3f%%"),
-                "required_bounce_pct": st.column_config.NumberColumn(format="%.3f%%"),
-            }, hide_index=True, use_container_width=True
-        )
+    # Download CSV
+    if not missed_buys_df.empty or not missed_sells_df.empty:
+        combined_missed = []
+        if not missed_buys_df.empty:
+            buys_export = missed_buys_df.copy()
+            buys_export['signal_type'] = 'missed_buy'
+            combined_missed.append(buys_export)
+        if not missed_sells_df.empty:
+            sells_export = missed_sells_df.copy()
+            sells_export['signal_type'] = 'missed_sell'
+            combined_missed.append(sells_export)
+        
+        if combined_missed:
+            export_df = pd.concat(combined_missed, ignore_index=True)
+            export_df['timestamp'] = pd.to_datetime(export_df['timestamp']).dt.strftime("%Y-%m-%d %H:%M:%S")
+            csv = export_df.to_csv(index=False).encode("utf-8")
+            st.download_button("⬇️ Download Missed Signals CSV", data=csv, file_name="missed_signals.csv", mime="text/csv")
 
 # ----- TAB 6: Overall Stats -----
 with tab6:
@@ -1320,11 +1166,28 @@ with tab6:
             hide_index=True
         )
 
+    # What-if comparison if available
+    if 'missed_buys_try' in locals() and 'missed_sells_try' in locals():
+        st.markdown("---")
+        st.markdown("#### Current vs What-If Comparison")
+        
+        current_total = len(missed_buys_df) + len(missed_sells_df)
+        try_total = len(missed_buys_try) + len(missed_sells_try)
+        improvement = current_total - try_total
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Current Total", f"{current_total:,}")
+        with col2:
+            st.metric("What-If Total", f"{try_total:,}")
+        with col3:
+            st.metric("Improvement", f"{improvement:+d}")
+
     st.markdown("---")
     st.caption(
         "The position-aware analysis shows missed BUY signals only when you weren't in a position, "
         "and missed SELL signals only when you were in a position. This provides more actionable insights "
-        "compared to traditional confirmation-based analysis."
+        "for actual trading decisions."
     )
 
 # ====== Sidebar: Open Positions compact ======
