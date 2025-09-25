@@ -156,6 +156,152 @@ def maybe_auto_refresh() -> int:
         st.cache_data.clear()
         st.rerun()
     return elapsed
+# === Mirror of the bot's dynamic entry config (tune to match the bot) ===
+DYNAMIC_ENTRY_UI = {
+    # NOTE: bot has 0.0025 (0.25%) but comments say 0.5%.
+    # Set this to whatever the bot actually uses.
+    "confirmation_bounce_pct": 0.0025,   # 0.25% bounce above the post-signal low
+    "timeout_minutes": 40,               # ~100 cycles at 20s ≈ 33m; use 40m buffer
+    "cooldown_minutes": 10,              # avoid double-counting overlapping signals
+    "match_window_minutes": 5,           # how close an OPEN must be to count as “taken”
+}
+
+def _meets_entry_signal(row, asset):
+    """Entry Signal: p_up > p_down AND p_up >= buy_threshold AND conf >= min_confidence"""
+    th = ASSET_THRESHOLDS.get(asset)
+    if th is None:
+        return False, np.nan, np.nan, np.nan
+    pu = pd.to_numeric(row.get("p_up"), errors="coerce")
+    pdn = pd.to_numeric(row.get("p_down"), errors="coerce")
+    if pd.isna(pu) or pd.isna(pdn):
+        return False, pu, pdn, np.nan
+    conf = abs(pu - pdn)
+    ok = (pu > pdn) and (pu >= th["buy_threshold"]) and (conf >= th["min_confidence"])
+    return ok, pu, pdn, conf
+
+def _first_confirmation_window(asset_df, start_idx, bounce_pct, timeout_td):
+    """
+    Given an index where the signal starts, walk forward:
+      - track lowest low since signal
+      - confirm when close >= low*(1 + bounce_pct)
+      - stop if timeout exceeded or signal invalidated (optional)
+    Returns (confirm_idx or None, watch_low_at_confirm or None)
+    """
+    start_ts = pd.to_datetime(asset_df.iloc[start_idx]["timestamp"], errors="coerce")
+    if pd.isna(start_ts):
+        return None, None
+    watch_low = float(asset_df.iloc[start_idx].get("low", np.nan))
+    best_low = watch_low if not pd.isna(watch_low) else np.inf
+
+    for i in range(start_idx, len(asset_df)):
+        row = asset_df.iloc[i]
+        ts = pd.to_datetime(row["timestamp"], errors="coerce")
+        if pd.isna(ts):
+            continue
+        if ts - start_ts > timeout_td:
+            return None, None
+
+        # keep updating the low while watching
+        cur_low = float(row.get("low", np.nan))
+        if not pd.isna(cur_low):
+            best_low = min(best_low, cur_low)
+
+        close_px = float(row.get("close", np.nan))
+        if not pd.isna(close_px) and best_low not in (None, np.inf, np.nan):
+            if close_px >= best_low * (1.0 + bounce_pct):
+                return i, best_low
+
+    return None, None
+
+def identify_missed_entries(market_df: pd.DataFrame, trades_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Find (asset, signal_time, confirm_time, expected_price, pu, pd, confidence) where
+    entry signal + confirmation occurred, but no OPEN/BUY within +/- match_window_minutes.
+    """
+    if market_df is None or market_df.empty:
+        return pd.DataFrame()
+
+    # Prepare trades (only OPEN/BUY)
+    opens = pd.DataFrame()
+    if trades_df is not None and not trades_df.empty:
+        action_col = "action" if "action" in trades_df.columns else ("unified_action" if "unified_action" in trades_df.columns else None)
+        if action_col:
+            mask = trades_df[action_col].astype(str).str.upper().isin(["OPEN", "BUY"])
+            opens = trades_df.loc[mask].copy()
+            opens["__t__"] = pd.to_datetime(opens["timestamp"], errors="coerce")
+            opens["asset"] = opens["asset"].apply(unify_symbol) if "asset" in opens.columns else opens["asset"]
+
+    bounce_pct = DYNAMIC_ENTRY_UI["confirmation_bounce_pct"]
+    timeout_td = pd.Timedelta(minutes=DYNAMIC_ENTRY_UI["timeout_minutes"])
+    cooldown_td = pd.Timedelta(minutes=DYNAMIC_ENTRY_UI["cooldown_minutes"])
+    match_td = pd.Timedelta(minutes=DYNAMIC_ENTRY_UI["match_window_minutes"])
+
+    out = []
+    for asset, g in market_df.groupby("asset"):
+        if asset not in ASSET_THRESHOLDS:
+            continue
+        g = g.copy().sort_values(by="timestamp", key=lambda s: pd.to_datetime(s, errors="coerce")).reset_index(drop=True)
+        g["__t__"] = pd.to_datetime(g["timestamp"], errors="coerce")
+
+        i = 0
+        last_taken_ts = None
+        while i < len(g):
+            row = g.iloc[i]
+            ok, pu, pdn, conf = _meets_entry_signal(row, asset)
+            if not ok:
+                i += 1
+                continue
+
+            # Found a signal start -> look for confirmation
+            confirm_idx, watch_low = _first_confirmation_window(g, i, bounce_pct, timeout_td)
+            if confirm_idx is None:
+                # no confirmation; advance one step to look for another signal
+                i += 1
+                continue
+
+            sig_ts = g.iloc[i]["__t__"]
+            conf_row = g.iloc[confirm_idx]
+            conf_ts = conf_row["__t__"]
+            expected_px = float(conf_row.get("close", np.nan))
+
+            # cooldown to avoid overlapping signals spamming
+            if last_taken_ts is not None and conf_ts - last_taken_ts < cooldown_td:
+                i = confirm_idx + 1
+                continue
+
+            # Check if an OPEN exists near confirmation time
+            taken = False
+            if not opens.empty:
+                o = opens[opens["asset"] == asset]
+                if not o.empty:
+                    delta = (o["__t__"] - conf_ts).abs()
+                    taken = (delta <= match_td).any()
+
+            if not taken:
+                out.append({
+                    "asset": asset,
+                    "signal_time": sig_ts,
+                    "confirm_time": conf_ts,
+                    "expected_price": expected_px,
+                    "watch_low_at_confirm": watch_low,
+                    "p_up_at_signal": float(pu) if pd.notna(pu) else np.nan,
+                    "p_down_at_signal": float(pdn) if pd.notna(pdn) else np.nan,
+                    "confidence_at_signal": float(conf) if pd.notna(conf) else np.nan,
+                    "bounce_pct_used": bounce_pct,
+                    "timeout_minutes_used": DYNAMIC_ENTRY_UI["timeout_minutes"],
+                    "match_window_minutes": DYNAMIC_ENTRY_UI["match_window_minutes"],
+                })
+            else:
+                # Treat as handled; set cooldown anchor
+                last_taken_ts = conf_ts
+
+            # move index forward beyond confirmation to avoid duplicates
+            i = confirm_idx + 1
+
+    missed = pd.DataFrame(out)
+    if not missed.empty:
+        missed = missed.sort_values("confirm_time", ascending=False)
+    return missed
 
 # === Thresholds used by the bot (keep in sync with the bot's CONFIG) ===
 ASSET_THRESHOLDS = {
@@ -1187,3 +1333,4 @@ with tab4:
 
             st.markdown("---")
             st.caption("Open = buy execution records; validity is evaluated using the thresholds configured for each asset and the probabilities logged with the trade at that time.")
+
