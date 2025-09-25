@@ -20,75 +20,29 @@ def apply_theme():
     if theme == "dark":
         st.markdown("""
         <style>
-        .stApp {
-            background-color: #0E1117;
-            color: #FAFAFA;
-        }
-        .stSidebar {
-            background-color: #1E1E1E;
-        }
-        .metric-card {
-            background-color: #262730;
-            padding: 1rem;
-            border-radius: 0.5rem;
-            border: 1px solid #3B4252;
-        }
-        .stExpander {
-            background-color: #262730;
-            border: 1px solid #3B4252;
-        }
-        .stSelectbox > div > div {
-            background-color: #262730;
-            color: #FAFAFA;
-        }
-        /* Mobile responsive adjustments */
+        .stApp { background-color: #0E1117; color: #FAFAFA; }
+        .stSidebar { background-color: #1E1E1E; }
+        .metric-card { background-color: #262730; padding: 1rem; border-radius: 0.5rem; border: 1px solid #3B4252; }
+        .stExpander { background-color: #262730; border: 1px solid #3B4252; }
+        .stSelectbox > div > div { background-color: #262730; color: #FAFAFA; }
         @media (max-width: 768px) {
-            .stSidebar {
-                width: 100% !important;
-            }
-            .main .block-container {
-                padding-top: 2rem;
-                padding-left: 1rem;
-                padding-right: 1rem;
-            }
-            .stMetric {
-                font-size: 0.8rem;
-            }
-            .stMetric > div {
-                font-size: 0.7rem;
-            }
+            .stSidebar { width: 100% !important; }
+            .main .block-container { padding-top: 2rem; padding-left: 1rem; padding-right: 1rem; }
+            .stMetric { font-size: 0.8rem; }
+            .stMetric > div { font-size: 0.7rem; }
         }
         </style>
         """, unsafe_allow_html=True)
     else:
         st.markdown("""
         <style>
-        .stApp {
-            background-color: #FFFFFF;
-            color: #262626;
-        }
-        .metric-card {
-            background-color: #F8F9FA;
-            padding: 1rem;
-            border-radius: 0.5rem;
-            border: 1px solid #E9ECEF;
-        }
-        /* Mobile responsive adjustments */
+        .stApp { background-color: #FFFFFF; color: #262626; }
+        .metric-card { background-color: #F8F9FA; padding: 1rem; border-radius: 0.5rem; border: 1px solid #E9ECEF; }
         @media (max-width: 768px) {
-            .stSidebar {
-                width: 100% !important;
-            }
-            .main .block-container {
-                padding-top: 2rem;
-                padding-left: 1rem;
-                padding-right: 1rem;
-            }
-            .stMetric {
-                font-size: 0.8rem;
-            }
-            .stMetric > div {
-                font-size: 0.7rem;
-            }
+            .stSidebar { width: 100% !important; }
+            .main .block-container { padding-top: 2rem; padding-left: 1rem; padding-right: 1rem; }
+            .stMetric { font-size: 0.8rem; }
+            .stMetric > div { font-size: 0.7rem; }
         }
         </style>
         """, unsafe_allow_html=True)
@@ -108,7 +62,6 @@ if "auto_refresh_enabled" not in st.session_state:
 if "theme" not in st.session_state:
     st.session_state.theme = "light"
 
-
 # ========= Helpers =========
 def _drive_id(url_or_id: str) -> str:
     if not url_or_id:
@@ -121,7 +74,6 @@ def _drive_id(url_or_id: str) -> str:
     if m:
         return m.group(1)
     return s
-
 
 def _download_drive_bytes(url_or_id: str) -> bytes | None:
     fid = _drive_id(url_or_id)
@@ -143,7 +95,6 @@ def _download_drive_bytes(url_or_id: str) -> bytes | None:
         st.error(f"Network error downloading file ID {fid}: {e}")
         return None
 
-
 def _read_parquet_or_csv(b: bytes, label: str) -> pd.DataFrame:
     if not b:
         st.warning(f"{label}: no bytes downloaded")
@@ -160,12 +111,10 @@ def _read_parquet_or_csv(b: bytes, label: str) -> pd.DataFrame:
         st.error(f"{label}: failed to read Parquet: {e}")
         return pd.DataFrame()
 
-
 def lower_strip_cols(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     out.columns = [c.lower().strip() for c in out.columns]
     return out
-
 
 def unify_symbol(val: str) -> str:
     if not isinstance(val, str):
@@ -174,7 +123,6 @@ def unify_symbol(val: str) -> str:
     if "GIGA" in s:
         return "GIGA-USD"
     return s
-
 
 def normalize_prob_columns(df: pd.DataFrame) -> pd.DataFrame:
     rename_map = {}
@@ -194,15 +142,12 @@ def normalize_prob_columns(df: pd.DataFrame) -> pd.DataFrame:
         df["p_down"] = np.nan
     return df
 
-
 # IMPORTANT: raw timestamps remain unchanged. Use parsed view ONLY when needed.
 def _parsed_ts(s: pd.Series) -> pd.Series:
     return pd.to_datetime(s, errors="coerce")
 
-
 def seconds_since_last_run() -> int:
     return int(time.time() - st.session_state.get("last_refresh", 0))
-
 
 def maybe_auto_refresh() -> int:
     elapsed = seconds_since_last_run()
@@ -212,6 +157,79 @@ def maybe_auto_refresh() -> int:
         st.rerun()
     return elapsed
 
+# === Thresholds used by the bot (keep in sync with the bot's CONFIG) ===
+ASSET_THRESHOLDS = {
+    "CVX-USD": {"buy_threshold": 0.70, "min_confidence": 0.60},
+    "MNDE-USD": {"buy_threshold": 0.68, "min_confidence": 0.60},
+    "MOG-USD": {"buy_threshold": 0.75, "min_confidence": 0.60},
+    "VVV-USD": {"buy_threshold": 0.65, "min_confidence": 0.60},
+    "LCX-USD": {"buy_threshold": 0.72, "min_confidence": 0.60},
+    "GIGA-USD": {"buy_threshold": 0.73, "min_confidence": 0.60},
+}
+
+def _confidence_from_probs(pu, pdn):
+    if pd.isna(pu) or pd.isna(pdn):
+        return np.nan
+    return float(abs(float(pu) - float(pdn)))
+
+def flag_threshold_violations(trades: pd.DataFrame) -> pd.DataFrame:
+    """
+    Adds per-row:
+      - valid_at_open (bool): was OPEN legal at log time per thresholds?
+      - violation_reason (str): why not
+      - revalidated_hint (bool): heuristic tag if reason mentions re-validation
+    """
+    if trades.empty:
+        return trades.copy()
+    df = trades.copy()
+
+    # Ensure numeric
+    for col in ["p_up", "p_down", "confidence"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    if "confidence" not in df.columns:
+        df["confidence"] = df.apply(lambda r: _confidence_from_probs(r.get("p_up"), r.get("p_down")), axis=1)
+
+    # Determine action column
+    action_col = "action" if "action" in df.columns else ("unified_action" if "unified_action" in df.columns else None)
+
+    valid_flags, reasons = [], []
+    for _, row in df.iterrows():
+        # Only care about OPEN buys
+        is_open = False
+        if action_col:
+            val = str(row.get(action_col, "")).upper()
+            is_open = (val == "OPEN" or val == "BUY")
+        if not is_open:
+            valid_flags.append(True)
+            reasons.append("")
+            continue
+
+        asset = row.get("asset")
+        th = ASSET_THRESHOLDS.get(asset)
+        if th is None:
+            valid_flags.append(True)  # Unknown asset: don't penalize
+            reasons.append("")
+            continue
+
+        pu, pdn, conf = row.get("p_up"), row.get("p_down"), row.get("confidence")
+        r = []
+        if pd.isna(pu) or pd.isna(pdn) or pd.isna(conf):
+            r.append("missing probabilities")
+        else:
+            if not (pu > pdn): r.append("p_up ≤ p_down")
+            if not (pu >= th["buy_threshold"]): r.append(f"p_up {pu:.3f} < buy_threshold {th['buy_threshold']:.2f}")
+            if not (conf >= th["min_confidence"]): r.append(f"confidence {conf:.3f} < min_confidence {th['min_confidence']:.2f}")
+        valid_flags.append(len(r) == 0)
+        reasons.append("; ".join(r))
+
+    df["valid_at_open"] = valid_flags
+    df["violation_reason"] = reasons
+
+    reason_text = df.get("reason", pd.Series([""] * len(df))).astype(str).str.lower()
+    df["revalidated_hint"] = reason_text.str.contains("re-validated") | reason_text.str.contains("revalidated")
+
+    return df
 
 # ========= Data loading (cached) =========
 @st.cache_data(ttl=60)
@@ -280,7 +298,6 @@ def load_data(trades_link: str, market_link: str):
 
     return trades, market
 
-
 # ========= P&L / Trades utils =========
 def format_timedelta_hhmm(td):
     if pd.isna(td):
@@ -289,7 +306,6 @@ def format_timedelta_hhmm(td):
     m, _ = divmod(total_seconds, 60)
     h, mm = divmod(m, 60)
     return f"{h:02d}:{mm:02d}"
-
 
 def calculate_pnl_and_metrics(trades_df: pd.DataFrame):
     if trades_df is None or trades_df.empty:
@@ -355,13 +371,12 @@ def calculate_pnl_and_metrics(trades_df: pd.DataFrame):
 
     return pnl_per_asset, df, stats
 
-
 def calculate_open_positions(trades_df: pd.DataFrame, market_df: pd.DataFrame) -> pd.DataFrame:
     if trades_df is None or trades_df.empty or market_df is None or market_df.empty:
         return pd.DataFrame()
 
     positions = {}
-    position_open_times = {}  # Track when each position first opened
+    position_open_times = {}
     tdf = trades_df.copy()
     tdf["__parsed_ts__"] = _parsed_ts(tdf["timestamp"])
     tdf = tdf.sort_values("__parsed_ts__").drop(columns="__parsed_ts__")
@@ -377,7 +392,7 @@ def calculate_open_positions(trades_df: pd.DataFrame, market_df: pd.DataFrame) -
             positions[asset] = {"quantity": Decimal(0), "cost": Decimal(0)}
 
         if action in ["buy", "open"]:
-            if positions[asset]["quantity"] == 0:  # First buy for this position
+            if positions[asset]["quantity"] == 0:
                 position_open_times[asset] = timestamp
             positions[asset]["cost"] += qty * price
             positions[asset]["quantity"] += qty
@@ -388,7 +403,6 @@ def calculate_open_positions(trades_df: pd.DataFrame, market_df: pd.DataFrame) -
                 positions[asset]["cost"] -= avg_cost * sell_qty
                 positions[asset]["quantity"] -= sell_qty
                 if positions[asset]["quantity"] <= Decimal("1e-9"):
-                    # Position closed, remove open time
                     if asset in position_open_times:
                         del position_open_times[asset]
 
@@ -397,14 +411,12 @@ def calculate_open_positions(trades_df: pd.DataFrame, market_df: pd.DataFrame) -
         if data["quantity"] > Decimal("1e-9"):
             latest_asset_rows = market_df[market_df["asset"] == asset]
             if not latest_asset_rows.empty:
-                # latest by parsed timestamp
                 idx = _parsed_ts(latest_asset_rows["timestamp"]).idxmax()
                 latest_price = Decimal(str(latest_asset_rows.loc[idx, "close"]))
                 avg_entry = data["cost"] / data["quantity"]
                 current_value = latest_price * data["quantity"]
                 unrealized = current_value - data["cost"]
-                
-                # Format open time
+
                 open_time_str = "N/A"
                 if asset in position_open_times:
                     try:
@@ -413,7 +425,7 @@ def calculate_open_positions(trades_df: pd.DataFrame, market_df: pd.DataFrame) -
                             open_time_str = open_ts.strftime("%H:%M")
                     except:
                         pass
-                
+
                 open_positions.append(
                     {
                         "Asset": asset,
@@ -428,56 +440,48 @@ def calculate_open_positions(trades_df: pd.DataFrame, market_df: pd.DataFrame) -
 
     return pd.DataFrame(open_positions)
 
-
 def analyze_trade_performance_by_reason(trades_df: pd.DataFrame) -> pd.DataFrame:
     """Analyze trading performance by signal/reason"""
     if trades_df is None or trades_df.empty or "reason" not in trades_df.columns:
         return pd.DataFrame()
 
-    # Get matched trades for analysis
     matched_df, _ = match_trades_fifo(trades_df)
     if matched_df.empty:
         return pd.DataFrame()
 
-    # Group by buy and sell reasons
     performance_data = []
-    
-    # Analyze by buy reason
+
     if "Reason Buy" in matched_df.columns:
         buy_analysis = matched_df.groupby("Reason Buy").agg({
             "P&L ($)": ["count", "sum", "mean", lambda x: (x > 0).sum()],
             "P&L %": "mean"
         }).round(4)
-        
         buy_analysis.columns = ["Total Trades", "Total P&L ($)", "Avg P&L ($)", "Wins", "Avg P&L (%)"]
         buy_analysis["Win Rate (%)"] = (buy_analysis["Wins"] / buy_analysis["Total Trades"] * 100).round(1)
         buy_analysis["Signal Type"] = "Buy Signal"
         buy_analysis["Reason"] = buy_analysis.index
         buy_analysis = buy_analysis.reset_index(drop=True)
         performance_data.append(buy_analysis)
-    
-    # Analyze by sell reason  
+
     if "Reason Sell" in matched_df.columns:
         sell_analysis = matched_df.groupby("Reason Sell").agg({
             "P&L ($)": ["count", "sum", "mean", lambda x: (x > 0).sum()],
             "P&L %": "mean"
         }).round(4)
-        
         sell_analysis.columns = ["Total Trades", "Total P&L ($)", "Avg P&L ($)", "Wins", "Avg P&L (%)"]
         sell_analysis["Win Rate (%)"] = (sell_analysis["Wins"] / sell_analysis["Total Trades"] * 100).round(1)
         sell_analysis["Signal Type"] = "Sell Signal"
         sell_analysis["Reason"] = sell_analysis.index
         sell_analysis = sell_analysis.reset_index(drop=True)
         performance_data.append(sell_analysis)
-    
+
     if performance_data:
         result = pd.concat(performance_data, ignore_index=True)
-        result = result[["Signal Type", "Reason", "Total Trades", "Win Rate (%)", 
+        result = result[["Signal Type", "Reason", "Total Trades", "Win Rate (%)",
                         "Total P&L ($)", "Avg P&L ($)", "Avg P&L (%)"]]
         return result.sort_values(["Signal Type", "Total P&L ($)"], ascending=[True, False])
-    
-    return pd.DataFrame()
 
+    return pd.DataFrame()
 
 def match_trades_fifo(trades_df: pd.DataFrame):
     if trades_df is None or trades_df.empty:
@@ -541,7 +545,6 @@ def match_trades_fifo(trades_df: pd.DataFrame):
 
     return matched_df, open_df
 
-
 # ========= Load + maybe refresh =========
 st.markdown("## Crypto Trading Strategy")
 st.caption("ML Signals with Price-Based Exit Logic (timestamps read exactly as stored)")
@@ -552,29 +555,23 @@ apply_theme()
 trades_df, market_df = load_data(TRADES_LINK, MARKET_LINK)
 elapsed = maybe_auto_refresh()
 
+# >>> Add validation flags to trades <<<
+trades_df = flag_threshold_violations(trades_df) if not trades_df.empty else trades_df
+
 # ========= FIXED Debug panel =========
 with st.expander("🔎 Data Freshness Debug", expanded=True):
     # Trades
     if not trades_df.empty and "timestamp" in trades_df.columns:
-        # Create a working copy with parsed timestamps
         trades_debug = trades_df.copy()
         trades_debug["__parsed_ts__"] = _parsed_ts(trades_debug["timestamp"])
-        
-        # Remove any rows where timestamp couldn't be parsed
         trades_debug_valid = trades_debug.dropna(subset=["__parsed_ts__"])
-        
         if not trades_debug_valid.empty:
-            # Sort by parsed timestamp to get the truly latest entry
             trades_debug_sorted = trades_debug_valid.sort_values("__parsed_ts__")
-            latest_idx = trades_debug_sorted.index[-1]  # Last row after sorting
-            
+            latest_idx = trades_debug_sorted.index[-1]
             tr_raw_latest = trades_debug_sorted.loc[latest_idx, "timestamp"]
             tr_parsed_latest = trades_debug_sorted.loc[latest_idx, "__parsed_ts__"]
-            
             st.write(f"**Latest Trade Timestamp (raw):** {tr_raw_latest}")
             st.write(f"**Latest Trade Timestamp (parsed):** {tr_parsed_latest}")
-            
-            # Show parsing issues if any
             total_trades = len(trades_df)
             valid_trades = len(trades_debug_valid)
             if total_trades != valid_trades:
@@ -586,31 +583,21 @@ with st.expander("🔎 Data Freshness Debug", expanded=True):
     else:
         st.write("**Latest Trade Timestamp (raw):** No trade data")
         st.write("**Latest Trade Timestamp (parsed):** No trade data")
-    
     st.write(f"**Total Trades:** {len(trades_df):,}")
 
     # Market
     if not market_df.empty and "timestamp" in market_df.columns:
-        # Create a working copy with parsed timestamps
         market_debug = market_df.copy()
         market_debug["__parsed_ts__"] = _parsed_ts(market_debug["timestamp"])
-        
-        # Remove any rows where timestamp couldn't be parsed
         market_debug_valid = market_debug.dropna(subset=["__parsed_ts__"])
-        
         if not market_debug_valid.empty:
-            # Sort by parsed timestamp to get the truly latest entry
             market_debug_sorted = market_debug_valid.sort_values("__parsed_ts__")
-            latest_idx = market_debug_sorted.index[-1]  # Last row after sorting
-            
+            latest_idx = market_debug_sorted.index[-1]
             mk_raw_latest = market_debug_sorted.loc[latest_idx, "timestamp"]
             mk_parsed_latest = market_debug_sorted.loc[latest_idx, "__parsed_ts__"]
-            
             st.write(f"**Latest Market Timestamp (raw):** {mk_raw_latest}")
             st.write(f"**Latest Market Timestamp (parsed):** {mk_parsed_latest}")
             st.write(f"**Market timestamp dtype:** {market_df['timestamp'].dtype}")
-            
-            # Show parsing issues if any
             total_market = len(market_df)
             valid_market = len(market_debug_valid)
             if total_market != valid_market:
@@ -619,12 +606,10 @@ with st.expander("🔎 Data Freshness Debug", expanded=True):
             st.error("❌ No valid timestamps found in market data")
             st.write("**Sample raw timestamps:**")
             st.write(market_df["timestamp"].head().tolist())
-        
         st.write(f"**Total Market Records:** {len(market_df):,}")
     else:
         st.write("**Latest Market Timestamp (raw):** No market data")
         st.write("**Latest Market Timestamp (parsed):** No market data")
-
     st.write(f"**Cache age:** {elapsed}s")
 
 # Add additional debugging section
@@ -632,27 +617,20 @@ with st.expander("🔍 Deep Dive Debug", expanded=False):
     if not trades_df.empty and "timestamp" in trades_df.columns:
         st.write("**Last 10 Trade Timestamps (raw order):**")
         st.dataframe(trades_df[["timestamp"]].tail(10))
-        
-        # Show timestamp format analysis
         sample_timestamps = trades_df["timestamp"].dropna().head(5).tolist()
         st.write("**Sample timestamp formats:**")
         for i, ts in enumerate(sample_timestamps):
             st.write(f"{i+1}. `{ts}` (type: {type(ts).__name__})")
-        
-        # Check for duplicates or sorting issues
         parsed_ts = _parsed_ts(trades_df["timestamp"])
         valid_parsed = parsed_ts.dropna()
         if len(valid_parsed) > 0:
             is_sorted = valid_parsed.is_monotonic_increasing
             st.write(f"**Data chronologically sorted:** {'✅ Yes' if is_sorted else '❌ No'}")
             st.write(f"**Timestamp range:** {valid_parsed.min()} to {valid_parsed.max()}")
-    
     if not market_df.empty and "timestamp" in market_df.columns:
         st.write("**Last 10 Market Timestamps (raw order):**")
         st.dataframe(market_df[["timestamp", "asset"]].tail(10))
-        
-        # Check market data sorting by asset
-        for asset in market_df["asset"].unique()[:3]:  # Check first 3 assets
+        for asset in market_df["asset"].unique()[:3]:
             asset_data = market_df[market_df["asset"] == asset]
             parsed_ts = _parsed_ts(asset_data["timestamp"])
             valid_parsed = parsed_ts.dropna()
@@ -664,7 +642,6 @@ with st.expander("🔍 Deep Dive Debug", expanded=False):
 with st.sidebar:
     st.markdown("<h1 style='text-align:center;'>Crypto Strategy</h1>", unsafe_allow_html=True)
 
-    # Theme toggle and refresh controls
     col1, col2, col3 = st.columns([1, 1, 1])
     with col1:
         if st.button("🌙" if st.session_state.theme == "light" else "☀️", help="Toggle theme"):
@@ -699,28 +676,19 @@ with st.sidebar:
     st.markdown(f"**Market:** {'✅' if not market_df.empty else '❌'} {len(market_df):,}")
     if not market_df.empty and "asset" in market_df.columns:
         st.markdown(f"**Assets:** {market_df['asset'].nunique():,}")
-    
-    # Open Positions in Sidebar
+
     st.markdown("---")
     open_positions_df = calculate_open_positions(trades_df, market_df) if not trades_df.empty else pd.DataFrame()
     if not open_positions_df.empty:
         st.markdown("**📊 Open Positions**")
-        
-        # Sort by P&L descending (best performers first)
         sorted_positions = open_positions_df.sort_values("Unrealized P&L ($)", ascending=False)
-        
         for _, pos in sorted_positions.iterrows():
             pnl = pos["Unrealized P&L ($)"]
             pnl_pct = ((pos["Current Price"] - pos["Avg. Entry Price"]) / pos["Avg. Entry Price"] * 100) if pos["Avg. Entry Price"] != 0 else 0
-            
-            # Color coding
             if pnl >= 0:
-                color = "#16a34a"
-                pnl_icon = "📈"
+                color = "#16a34a"; pnl_icon = "📈"
             else:
-                color = "#ef4444"  
-                pnl_icon = "📉"
-            
+                color = "#ef4444"; pnl_icon = "📉"
             asset_name = pos["Asset"]
             cur_price = pos["Current Price"]
             pf = ".8f" if cur_price < 0.001 else ".6f" if cur_price < 1 else ".4f"
@@ -728,10 +696,7 @@ with st.sidebar:
             epf = ".8f" if avg_price < 0.001 else ".6f" if avg_price < 1 else ".4f"
             open_time = pos.get("Open Time", "N/A")
             quantity = pos["Quantity"]
-            
-            # Position card with simplified HTML for better compatibility
             card_bg = "rgba(22,163,74,0.1)" if pnl >= 0 else "rgba(239,68,68,0.1)"
-            
             st.markdown(
                 f"""
                 <div style="background-color: {card_bg}; border-left: 4px solid {color}; padding: 12px; margin: 8px 0; border-radius: 4px;">
@@ -751,16 +716,13 @@ with st.sidebar:
                         <span style="color: {color}; font-weight: bold; font-size: 13px;">P&L: ${pnl:+.4f}</span>
                     </div>
                 </div>
-                """, 
+                """,
                 unsafe_allow_html=True
             )
-        
-        # Summary stats
         total_pnl = sorted_positions["Unrealized P&L ($)"].sum()
         total_value = sorted_positions["Current Value ($)"].sum()
         winners = len(sorted_positions[sorted_positions["Unrealized P&L ($)"] > 0])
         total_positions = len(sorted_positions)
-        
         st.markdown("---")
         st.markdown(
             f"""
@@ -788,7 +750,7 @@ with st.sidebar:
         )
 
 # ========= Tabs =========
-tab1, tab2, tab3 = st.tabs(["📈 Price & Trades", "💰 P&L Analysis", "📜 Trade History"])
+tab1, tab2, tab3, tab4 = st.tabs(["📈 Price & Trades", "💰 P&L Analysis", "📜 Trade History", "🚦 Validations"])
 
 # ----- TAB 1: Price & Trades -----
 with tab1:
@@ -813,9 +775,7 @@ with tab1:
         if asset_market.empty:
             st.warning(f"No market data found for {selected_asset}.")
         else:
-            asset_market_sorted = asset_market.sort_values(
-                by="timestamp", key=lambda s: _parsed_ts(s)
-            )
+            asset_market_sorted = asset_market.sort_values(by="timestamp", key=lambda s: _parsed_ts(s))
             end_parsed = _parsed_ts(asset_market_sorted["timestamp"]).max()
             if pd.isna(end_parsed):
                 st.warning("Timestamps for this asset could not be parsed.")
@@ -889,7 +849,7 @@ with tab1:
                                 )
                             )
 
-                    # Buy/Sell markers from trades
+                    # Buy/Sell markers from trades (with validation info)
                     if not trades_df.empty:
                         asset_trades = trades_df[trades_df["asset"] == selected_asset].copy()
                         if not asset_trades.empty and "timestamp" in asset_trades.columns:
@@ -898,27 +858,51 @@ with tab1:
                             asset_trades = asset_trades.loc[mask].copy()
 
                             if not asset_trades.empty:
-                                # y marker level slightly above the min
                                 marker_y = y_min + (vis["high"].max() - vis["low"].min()) * 0.02
 
-                                buys = asset_trades[asset_trades["unified_action"].str.lower().isin(["buy", "open"])]
+                                # BUY markers
+                                buys = asset_trades[asset_trades["unified_action"].str.lower().isin(["buy", "open"])].copy()
                                 if not buys.empty:
                                     buy_prices = buys["price"].apply(float)
                                     buy_reasons = buys.get("reason", pd.Series([""] * len(buys))).fillna("")
+
+                                    # validation fields for hover + coloring
+                                    if "valid_at_open" not in buys.columns:
+                                        buys["valid_at_open"] = True
+                                    if "violation_reason" not in buys.columns:
+                                        buys["violation_reason"] = ""
+                                    if "revalidated_hint" not in buys.columns:
+                                        buys["revalidated_hint"] = False
+
+                                    buy_valid = buys["valid_at_open"].fillna(True)
+                                    buy_viols = buys["violation_reason"].fillna("")
+                                    buy_reval = buys["revalidated_hint"].fillna(False)
+
+                                    # colors: green if valid, amber if invalid
+                                    buy_colors = np.where(buy_valid, "#4caf50", "#f59e0b")
+                                    buy_valid_str = buy_valid.map(lambda x: "Yes" if x else "No")
+                                    buy_reval_str = buy_reval.map(lambda x: "Yes" if x else "")
+                                    buy_viol_str = buy_viols
+
                                     fig.add_trace(
                                         go.Scatter(
                                             x=_parsed_ts(buys["timestamp"]),
                                             y=[marker_y] * len(buys),
                                             mode="markers",
                                             name="BUY",
-                                            marker=dict(symbol="triangle-up", size=14, color="#4caf50", line=dict(width=1, color="white")),
-                                            customdata=np.stack((buy_prices, buy_reasons), axis=-1),
+                                            marker=dict(symbol="triangle-up", size=14, color=buy_colors, line=dict(width=1, color="white")),
+                                            customdata=np.stack((buy_prices, buy_reasons, buy_valid_str, buy_reval_str, buy_viol_str), axis=-1),
                                             hovertemplate="<b>BUY</b> @ $%{customdata[0]:.8f}<br>%{x|%H:%M:%S}"
-                                                          "<br>Reason: %{customdata[1]}<extra></extra>",
+                                                          "<br>Reason: %{customdata[1]}"
+                                                          "<br>Valid at OPEN: %{customdata[2]}"
+                                                          "<br>%{customdata[3]}"  # Re-validated line (empty if not)
+                                                          "<br>%{customdata[4]}"  # Violation reason (empty if none)
+                                                          "<extra></extra>",
                                         )
                                     )
 
-                                sells = asset_trades[asset_trades["unified_action"].str.lower().isin(["sell", "close"])]
+                                # SELL markers
+                                sells = asset_trades[asset_trades["unified_action"].str.lower().isin(["sell", "close"])].copy()
                                 if not sells.empty:
                                     sell_prices = sells["price"].apply(float)
                                     sell_reasons = sells.get("reason", pd.Series([""] * len(sells))).fillna("")
@@ -980,14 +964,13 @@ with tab1:
                         if not at.empty:
                             t_parsed = _parsed_ts(at["timestamp"])
                             asset_trades_period = at.loc[(t_parsed >= start_parsed) & (t_parsed <= end_parsed)].copy()
-                    
-                    # Calculate buy/sell orders for the period
+
                     buy_orders = 0
                     sell_orders = 0
                     if not asset_trades_period.empty:
                         buy_orders = len(asset_trades_period[asset_trades_period["unified_action"].str.lower().isin(["buy", "open"])])
                         sell_orders = len(asset_trades_period[asset_trades_period["unified_action"].str.lower().isin(["sell", "close"])])
-                    
+
                     c1, c2, c3, c4 = st.columns(4)
                     with c1:
                         st.metric("Trade Orders", len(asset_trades_period))
@@ -1038,12 +1021,11 @@ with tab2:
                 )
             )
             fig_pnl.add_hline(y=0, line_dash="dash", line_color="gray", annotation_text="Break Even")
-            
-            # Apply theme colors to chart
+
             chart_bg = "rgba(14,17,23,1)" if st.session_state.theme == "dark" else "rgba(255,255,255,1)"
             chart_grid = "rgba(59,66,82,0.3)" if st.session_state.theme == "dark" else "rgba(128,128,128,0.1)"
             chart_text = "#FAFAFA" if st.session_state.theme == "dark" else "#262626"
-            
+
             fig_pnl.update_layout(
                 title="Total Portfolio P&L",
                 template="plotly_dark" if st.session_state.theme == "dark" else "plotly_white",
@@ -1058,10 +1040,8 @@ with tab2:
             )
             st.plotly_chart(fig_pnl, use_container_width=True)
 
-        # Mobile responsive layout for P&L by asset
         st.markdown("---")
         col_left, col_right = st.columns([1, 1])
-        
         with col_left:
             st.markdown("### Realized P&L by Asset")
             if pnl_summary:
@@ -1076,7 +1056,6 @@ with tab2:
                     )
             else:
                 st.info("No realized P&L yet.")
-        
         with col_right:
             st.markdown("### Signal Performance Analysis")
             attribution_df = analyze_trade_performance_by_reason(trades_df)
@@ -1095,20 +1074,16 @@ with tab2:
                     use_container_width=True,
                     hide_index=True,
                 )
-                
-                # Best and worst performing signals
                 if len(attribution_df) > 0:
                     best_signal = attribution_df.loc[attribution_df["Total P&L ($)"].idxmax()]
                     worst_signal = attribution_df.loc[attribution_df["Total P&L ($)"].idxmin()]
-                    
-                    st.markdown("**Top Performer:** " + 
-                              f"{best_signal['Reason']} ({best_signal['Signal Type']}) - " +
-                              f"${best_signal['Total P&L ($)']:.2f} / {best_signal['Win Rate (%)']:.1f}% WR")
-                    
+                    st.markdown("**Top Performer:** " +
+                                f"{best_signal['Reason']} ({best_signal['Signal Type']}) - " +
+                                f"${best_signal['Total P&L ($)']:.2f} / {best_signal['Win Rate (%)']:.1f}% WR")
                     if len(attribution_df) > 1:
-                        st.markdown("**Worst Performer:** " + 
-                                  f"{worst_signal['Reason']} ({worst_signal['Signal Type']}) - " +
-                                  f"${worst_signal['Total P&L ($)']:.2f} / {worst_signal['Win Rate (%)']:.1f}% WR")
+                        st.markdown("**Worst Performer:** " +
+                                    f"{worst_signal['Reason']} ({worst_signal['Signal Type']}) - " +
+                                    f"${worst_signal['Total P&L ($)']:.2f} / {worst_signal['Win Rate (%)']:.1f}% WR")
             else:
                 st.info("No signal attribution data available. Make sure your trades have 'reason' field populated.")
 
@@ -1119,31 +1094,18 @@ with tab3:
         st.warning("No trade history to display.")
     else:
         matched_df, open_df = match_trades_fifo(trades_df)
-
         st.markdown("#### Completed Trades (FIFO)")
         if not matched_df.empty:
             display_matched = matched_df.copy()
             for col in ["Quantity", "Buy Price", "Sell Price", "P&L ($)", "P&L %"]:
                 if col in display_matched.columns:
                     display_matched[col] = display_matched[col].apply(float)
-
             display_matched["Buy Time"] = pd.to_datetime(display_matched["Buy Time"]).dt.strftime("%Y-%m-%d %H:%M:%S")
             display_matched["Sell Time"] = pd.to_datetime(display_matched["Sell Time"]).dt.strftime("%Y-%m-%d %H:%M:%S")
             display_matched["Hold Time"] = display_matched["Hold Time"].apply(format_timedelta_hhmm)
-
             st.dataframe(
                 display_matched[
-                    [
-                        "Asset",
-                        "Quantity",
-                        "Buy Time",
-                        "Buy Price",
-                        "Sell Time",
-                        "Sell Price",
-                        "Hold Time",
-                        "P&L ($)",
-                        "P&L %",
-                    ]
+                    ["Asset","Quantity","Buy Time","Buy Price","Sell Time","Sell Price","Hold Time","P&L ($)","P&L %"]
                 ],
                 column_config={
                     "Asset": st.column_config.TextColumn(width="small"),
@@ -1166,16 +1128,10 @@ with tab3:
             for col in ["quantity", "price"]:
                 if col in display_open.columns:
                     display_open[col] = display_open[col].apply(float)
-
-            display_open["Time"] = pd.to_datetime(display_open["timestamp"], errors="coerce").dt.strftime(
-                "%Y-%m-%d %H:%M:%S"
-            )
-            display_open = display_open.rename(
-                columns={"asset": "Asset", "quantity": "Quantity", "price": "Price", "reason": "Reason"}
-            )
-
+            display_open["Time"] = pd.to_datetime(display_open["timestamp"], errors="coerce").dt.strftime("%Y-%m-%d %H:%M:%S")
+            display_open = display_open.rename(columns={"asset": "Asset", "quantity": "Quantity", "price": "Price", "reason": "Reason"})
             st.dataframe(
-                display_open[["Time", "Asset", "Quantity", "Price", "Reason"]],
+                display_open[["Time","Asset","Quantity","Price","Reason"]],
                 column_config={
                     "Asset": st.column_config.TextColumn(width="small"),
                     "Quantity": st.column_config.NumberColumn(format="%.4f", width="small"),
@@ -1184,6 +1140,50 @@ with tab3:
                 use_container_width=True,
                 hide_index=True,
             )
+            st.info("Note: validity checks apply to OPEN actions. See the '🚦 Validations' tab for flagged entries.")
         else:
             st.info("No open positions.")
 
+# ----- TAB 4: Validations -----
+with tab4:
+    st.markdown("### Threshold Validations at Execution Time (OPEN orders)")
+    if trades_df.empty:
+        st.info("No trades loaded.")
+    else:
+        # Determine which column indicates action
+        action_col = "action" if "action" in trades_df.columns else ("unified_action" if "unified_action" in trades_df.columns else None)
+        if action_col:
+            opens_mask = trades_df[action_col].astype(str).str.upper().isin(["OPEN", "BUY"])
+        else:
+            opens_mask = pd.Series([False] * len(trades_df), index=trades_df.index)
+
+        opens = trades_df.loc[opens_mask].copy()
+        if opens.empty:
+            st.info("No OPEN orders in the log.")
+        else:
+            total_opens = len(opens)
+            invalid = opens[~opens["valid_at_open"]]
+            valid = opens[opens["valid_at_open"]]
+
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.metric("OPEN Orders", f"{total_opens:,}")
+            with c2:
+                st.metric("Valid at OPEN", f"{len(valid):,}")
+            with c3:
+                st.metric("Flagged (Invalid)", f"{len(invalid):,}")
+
+            if not invalid.empty:
+                show_cols = ["timestamp","asset","price","p_up","p_down","confidence","reason","violation_reason"]
+                show_cols = [c for c in show_cols if c in invalid.columns]
+                st.markdown("#### ❗ Flagged OPENs")
+                st.dataframe(
+                    invalid[show_cols].sort_values("timestamp"),
+                    use_container_width=True,
+                    hide_index=True
+                )
+            else:
+                st.success("No violations detected 🎉")
+
+            st.markdown("---")
+            st.caption("Open = buy execution records; validity is evaluated using the thresholds configured for each asset and the probabilities logged with the trade at that time.")
