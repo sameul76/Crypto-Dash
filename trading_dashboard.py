@@ -162,17 +162,213 @@ def maybe_auto_refresh() -> int:
 
 # === Thresholds used by the bot (keep in sync with bot CONFIG) ===
 ASSET_THRESHOLDS = {
-    "CVX-USD": {"buy_threshold": 0.70, "min_confidence": 0.60},
-    "MNDE-USD": {"buy_threshold": 0.68, "min_confidence": 0.60},
-    "MOG-USD": {"buy_threshold": 0.75, "min_confidence": 0.60},
-    "VVV-USD": {"buy_threshold": 0.65, "min_confidence": 0.60},
-    "LCX-USD": {"buy_threshold": 0.72, "min_confidence": 0.60},
-    "GIGA-USD": {"buy_threshold": 0.73, "min_confidence": 0.60},
+    "CVX-USD": {"buy_threshold": 0.70, "min_confidence": 0.60, "sell_threshold": 0.30},
+    "MNDE-USD": {"buy_threshold": 0.68, "min_confidence": 0.60, "sell_threshold": 0.32},
+    "MOG-USD": {"buy_threshold": 0.75, "min_confidence": 0.60, "sell_threshold": 0.25},
+    "VVV-USD": {"buy_threshold": 0.65, "min_confidence": 0.60, "sell_threshold": 0.35},
+    "LCX-USD": {"buy_threshold": 0.72, "min_confidence": 0.60, "sell_threshold": 0.28},
+    "GIGA-USD": {"buy_threshold": 0.73, "min_confidence": 0.60, "sell_threshold": 0.27},
 }
 
 def _confidence_from_probs(pu, pdn):
     if pd.isna(pu) or pd.isna(pdn): return np.nan
     return float(abs(float(pu) - float(pdn)))
+
+# NEW: Position tracking function
+def track_positions_over_time(trades_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Track position quantities over time for each asset.
+    Returns DataFrame with columns: timestamp, asset, position_qty
+    """
+    if trades_df.empty:
+        return pd.DataFrame(columns=['timestamp', 'asset', 'position_qty'])
+    
+    position_history = []
+    
+    for asset in trades_df['asset'].unique():
+        asset_trades = trades_df[trades_df['asset'] == asset].copy()
+        asset_trades['__parsed_ts__'] = _parsed_ts(asset_trades['timestamp'])
+        asset_trades = asset_trades.sort_values('__parsed_ts__')
+        
+        current_qty = Decimal(0)
+        
+        for _, trade in asset_trades.iterrows():
+            action = str(trade.get('unified_action', '')).lower().strip()
+            qty = trade.get('quantity', Decimal(0))
+            
+            if action in ['buy', 'open']:
+                current_qty += qty
+            elif action in ['sell', 'close']:
+                current_qty -= qty
+                current_qty = max(current_qty, Decimal(0))  # Can't go negative
+            
+            position_history.append({
+                'timestamp': trade['timestamp'],
+                'asset': asset,
+                'position_qty': float(current_qty)
+            })
+    
+    return pd.DataFrame(position_history)
+
+# NEW: Get position status at specific timestamp
+def get_position_at_time(position_history: pd.DataFrame, asset: str, timestamp: pd.Timestamp) -> float:
+    """Get position quantity for an asset at a specific timestamp."""
+    if position_history.empty:
+        return 0.0
+    
+    asset_positions = position_history[position_history['asset'] == asset].copy()
+    if asset_positions.empty:
+        return 0.0
+    
+    asset_positions['__parsed_ts__'] = _series_to_utc(asset_positions['timestamp'])
+    asset_positions = asset_positions.sort_values('__parsed_ts__')
+    
+    # Find the last position update before or at the given timestamp
+    mask = asset_positions['__parsed_ts__'] <= timestamp
+    if mask.any():
+        return asset_positions.loc[mask, 'position_qty'].iloc[-1]
+    else:
+        return 0.0
+
+# NEW: Identify missed buy signals (when not in position)
+def identify_missed_buys(market_df: pd.DataFrame, trades_df: pd.DataFrame, position_history: pd.DataFrame, cfg: dict) -> pd.DataFrame:
+    """Find missed buy opportunities when not in position."""
+    if market_df is None or market_df.empty:
+        return pd.DataFrame()
+    
+    missed_buys = []
+    match_td = pd.Timedelta(minutes=int(cfg["match_window_minutes"]))
+    
+    # Get executed trades for comparison
+    executed_buys = pd.DataFrame()
+    if not trades_df.empty:
+        action_col = "action" if "action" in trades_df.columns else "unified_action"
+        buy_mask = trades_df[action_col].astype(str).str.upper().isin(["OPEN", "BUY"])
+        executed_buys = trades_df.loc[buy_mask].copy()
+        if not executed_buys.empty:
+            executed_buys["__t__"] = _series_to_utc(executed_buys["timestamp"])
+    
+    for asset in market_df['asset'].unique():
+        if asset not in ASSET_THRESHOLDS:
+            continue
+        
+        asset_data = market_df[market_df['asset'] == asset].copy()
+        asset_data['__t__'] = _series_to_utc(asset_data['timestamp'])
+        asset_data = asset_data.sort_values('__t__')
+        
+        th = ASSET_THRESHOLDS[asset]
+        
+        for _, row in asset_data.iterrows():
+            # Check if this is a buy signal
+            pu = pd.to_numeric(row.get("p_up"), errors="coerce")
+            pdn = pd.to_numeric(row.get("p_down"), errors="coerce")
+            
+            if pd.isna(pu) or pd.isna(pdn):
+                continue
+            
+            conf = abs(pu - pdn)
+            is_buy_signal = (pu > pdn) and (pu >= th["buy_threshold"]) and (conf >= th["min_confidence"])
+            
+            if not is_buy_signal:
+                continue
+            
+            # Check if we were in a position at this time
+            signal_time = row['__t__']
+            position_qty = get_position_at_time(position_history, asset, signal_time)
+            
+            if position_qty > 0:  # Already in position, don't mark as missed buy
+                continue
+            
+            # Check if there was an executed buy within the match window
+            executed = False
+            if not executed_buys.empty:
+                asset_buys = executed_buys[executed_buys['asset'] == asset]
+                if not asset_buys.empty:
+                    time_diffs = (asset_buys['__t__'] - signal_time).abs()
+                    executed = (time_diffs <= match_td).any()
+            
+            if not executed:
+                missed_buys.append({
+                    'asset': asset,
+                    'timestamp': signal_time,
+                    'price': float(row.get('close', 0)),
+                    'p_up': float(pu),
+                    'p_down': float(pdn),
+                    'confidence': float(conf),
+                    'signal_type': 'missed_buy'
+                })
+    
+    return pd.DataFrame(missed_buys)
+
+# NEW: Identify missed sell signals (when in position)
+def identify_missed_sells(market_df: pd.DataFrame, trades_df: pd.DataFrame, position_history: pd.DataFrame, cfg: dict) -> pd.DataFrame:
+    """Find missed sell opportunities when in position."""
+    if market_df is None or market_df.empty:
+        return pd.DataFrame()
+    
+    missed_sells = []
+    match_td = pd.Timedelta(minutes=int(cfg["match_window_minutes"]))
+    
+    # Get executed sells for comparison
+    executed_sells = pd.DataFrame()
+    if not trades_df.empty:
+        action_col = "action" if "action" in trades_df.columns else "unified_action"
+        sell_mask = trades_df[action_col].astype(str).str.upper().isin(["CLOSE", "SELL"])
+        executed_sells = trades_df.loc[sell_mask].copy()
+        if not executed_sells.empty:
+            executed_sells["__t__"] = _series_to_utc(executed_sells["timestamp"])
+    
+    for asset in market_df['asset'].unique():
+        if asset not in ASSET_THRESHOLDS:
+            continue
+        
+        asset_data = market_df[market_df['asset'] == asset].copy()
+        asset_data['__t__'] = _series_to_utc(asset_data['timestamp'])
+        asset_data = asset_data.sort_values('__t__')
+        
+        th = ASSET_THRESHOLDS[asset]
+        
+        for _, row in asset_data.iterrows():
+            # Check if this is a sell signal
+            pu = pd.to_numeric(row.get("p_up"), errors="coerce")
+            pdn = pd.to_numeric(row.get("p_down"), errors="coerce")
+            
+            if pd.isna(pu) or pd.isna(pdn):
+                continue
+            
+            conf = abs(pu - pdn)
+            is_sell_signal = (pdn > pu) and (pdn >= th["sell_threshold"]) and (conf >= th["min_confidence"])
+            
+            if not is_sell_signal:
+                continue
+            
+            # Check if we were in a position at this time
+            signal_time = row['__t__']
+            position_qty = get_position_at_time(position_history, asset, signal_time)
+            
+            if position_qty <= 0:  # Not in position, don't mark as missed sell
+                continue
+            
+            # Check if there was an executed sell within the match window
+            executed = False
+            if not executed_sells.empty:
+                asset_sells = executed_sells[executed_sells['asset'] == asset]
+                if not asset_sells.empty:
+                    time_diffs = (asset_sells['__t__'] - signal_time).abs()
+                    executed = (time_diffs <= match_td).any()
+            
+            if not executed:
+                missed_sells.append({
+                    'asset': asset,
+                    'timestamp': signal_time,
+                    'price': float(row.get('close', 0)),
+                    'p_up': float(pu),
+                    'p_down': float(pdn),
+                    'confidence': float(conf),
+                    'signal_type': 'missed_sell'
+                })
+    
+    return pd.DataFrame(missed_sells)
 
 def flag_threshold_violations(trades: pd.DataFrame) -> pd.DataFrame:
     if trades.empty: return trades.copy()
@@ -554,6 +750,11 @@ trades_df = flag_threshold_violations(trades_df) if not trades_df.empty else tra
 missed_current = identify_missed_entries(market_df, trades_df, DYNAMIC_ENTRY_UI)
 enriched_current = enrich_missed(missed_current)
 
+# NEW: Track positions and identify missed buys/sells
+position_history = track_positions_over_time(trades_df) if not trades_df.empty else pd.DataFrame()
+missed_buys_df = identify_missed_buys(market_df, trades_df, position_history, DYNAMIC_ENTRY_UI)
+missed_sells_df = identify_missed_sells(market_df, trades_df, position_history, DYNAMIC_ENTRY_UI)
+
 # ========= Sidebar =========
 with st.sidebar:
     st.markdown("<h1 style='text-align:center;'>Crypto Strategy</h1>", unsafe_allow_html=True)
@@ -785,6 +986,46 @@ with tab1:
                                                       "<br>Reason: %{customdata[1]}<extra></extra>",
                                     ))
 
+                    # NEW: Overlay missed buys when not in position
+                    if not missed_buys_df.empty:
+                        asset_missed_buys = missed_buys_df[missed_buys_df['asset'] == selected_asset].copy()
+                        if not asset_missed_buys.empty:
+                            asset_missed_buys['__t__'] = _series_to_utc(asset_missed_buys['timestamp'])
+                            fig.add_trace(go.Scatter(
+                                x=asset_missed_buys['__t__'], y=asset_missed_buys['price'],
+                                mode="markers", name="Missed BUY (no position)",
+                                marker=dict(symbol="circle-open", size=12, color="#4caf50", line=dict(width=2, color="#4caf50")),
+                                customdata=np.stack((
+                                    asset_missed_buys['p_up'], asset_missed_buys['p_down'],
+                                    asset_missed_buys['confidence'], asset_missed_buys['price']
+                                ), axis=-1),
+                                hovertemplate="<b>Missed BUY (no position)</b><br>%{x|%Y-%m-%d %H:%M}<br>"
+                                              "Price: $%{customdata[3]:.8f}<br>"
+                                              "P(Up): %{customdata[0]:.3f}<br>"
+                                              "P(Down): %{customdata[1]:.3f}<br>"
+                                              "Confidence: %{customdata[2]:.3f}<extra></extra>",
+                            ))
+
+                    # NEW: Overlay missed sells when in position
+                    if not missed_sells_df.empty:
+                        asset_missed_sells = missed_sells_df[missed_sells_df['asset'] == selected_asset].copy()
+                        if not asset_missed_sells.empty:
+                            asset_missed_sells['__t__'] = _series_to_utc(asset_missed_sells['timestamp'])
+                            fig.add_trace(go.Scatter(
+                                x=asset_missed_sells['__t__'], y=asset_missed_sells['price'],
+                                mode="markers", name="Missed SELL (in position)",
+                                marker=dict(symbol="square-open", size=12, color="#f44336", line=dict(width=2, color="#f44336")),
+                                customdata=np.stack((
+                                    asset_missed_sells['p_up'], asset_missed_sells['p_down'],
+                                    asset_missed_sells['confidence'], asset_missed_sells['price']
+                                ), axis=-1),
+                                hovertemplate="<b>Missed SELL (in position)</b><br>%{x|%Y-%m-%d %H:%M}<br>"
+                                              "Price: $%{customdata[3]:.8f}<br>"
+                                              "P(Up): %{customdata[0]:.3f}<br>"
+                                              "P(Down): %{customdata[1]:.3f}<br>"
+                                              "Confidence: %{customdata[2]:.3f}<extra></extra>",
+                            ))
+
                     # Overlay MISSED confirmations (CURRENT policy) as hollow circles
                     if not enriched_current.empty:
                         misses = enriched_current[enriched_current["asset"] == selected_asset].copy()
@@ -828,8 +1069,17 @@ with tab1:
                         config={"displayModeBar": True, "modeBarButtonsToAdd": ["drawline","drawopenpath","drawclosedpath"], "scrollZoom": True})
 
                     # Quick counts in view window
-                    miss_now = 0 if enriched_current.empty else len(enriched_current[enriched_current["asset"]==selected_asset])
-                    st.caption(f"Missed confirmations for {selected_asset} (current policy): **{miss_now}**")
+                    miss_buys_now = 0 if missed_buys_df.empty else len(missed_buys_df[missed_buys_df["asset"]==selected_asset])
+                    miss_sells_now = 0 if missed_sells_df.empty else len(missed_sells_df[missed_sells_df["asset"]==selected_asset])
+                    miss_confirmed_now = 0 if enriched_current.empty else len(enriched_current[enriched_current["asset"]==selected_asset])
+                    
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.caption(f"Missed BUYs (no position): **{miss_buys_now}**")
+                    with col2:
+                        st.caption(f"Missed SELLs (in position): **{miss_sells_now}**")
+                    with col3:
+                        st.caption(f"Missed confirmations: **{miss_confirmed_now}**")
 
 # ----- TAB 2: P&L Analysis -----
 with tab2:
@@ -942,37 +1192,71 @@ with tab4:
 
 # ----- TAB 5: Missed Entries -----
 with tab5:
-    st.markdown("### Entries that **should** have triggered (Signal + Confirmation) but did not execute")
-    c1, c2, c3 = st.columns(3)
-    with c1: st.metric("Missed (current)", f"{0 if missed_current is None else len(missed_current):,}")
-    with c2: st.metric("Missed (what-if)", f"{0 if missed_try is None else len(missed_try):,}")
-    with c3:
-        delta = (0 if missed_current is None else len(missed_current)) - (0 if missed_try is None else len(missed_try))
-        st.metric("Improvement", f"{delta:+d}")
+    st.markdown("### Position-Aware Missed Signals")
+    
+    # Summary metrics
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Missed BUYs (no position)", f"{len(missed_buys_df):,}")
+    with col2:
+        st.metric("Missed SELLs (in position)", f"{len(missed_sells_df):,}")
+    with col3:
+        st.metric("Missed Entries (current)", f"{len(missed_current):,}")
+    with col4:
+        st.metric("Missed Entries (what-if)", f"{len(missed_try):,}")
 
     # Filters
-    if not enriched_current.empty:
-        assets_list = sorted(enriched_current["asset"].unique().tolist())
+    all_assets = set()
+    if not missed_buys_df.empty:
+        all_assets.update(missed_buys_df['asset'].unique())
+    if not missed_sells_df.empty:
+        all_assets.update(missed_sells_df['asset'].unique())
+    
+    if all_assets:
+        assets_list = sorted(list(all_assets))
         sel_assets = st.multiselect("Filter by asset", assets_list, default=assets_list)
     else:
         sel_assets = []
 
-    # Diagnostics table
-    if not enriched_current.empty:
-        diag = enriched_current.assign(
-            reason=np.where(enriched_current["minutes_to_confirm"] > DYNAMIC_ENTRY_UI["timeout_minutes"], "Timeout",
-                     np.where(enriched_current["actual_bounce_pct"] < enriched_current["required_bounce_pct"], "Bounce too small",
-                     "Not matched to OPEN"))
-        )
-        view_diag = diag[diag["asset"].isin(sel_assets)] if sel_assets else diag
-        st.markdown("#### Missed reasons (current policy)")
+    # Display missed buys table
+    if not missed_buys_df.empty:
+        st.markdown("#### Missed BUY Signals (when not in position)")
+        filtered_buys = missed_buys_df[missed_buys_df['asset'].isin(sel_assets)] if sel_assets else missed_buys_df
+        display_buys = filtered_buys.copy()
+        display_buys['timestamp'] = pd.to_datetime(display_buys['timestamp']).dt.strftime("%Y-%m-%d %H:%M:%S")
         st.dataframe(
-            view_diag.groupby(["asset","reason"]).size().reset_index(name="count").sort_values("count", ascending=False),
-            use_container_width=True, hide_index=True
+            display_buys[['asset', 'timestamp', 'price', 'p_up', 'p_down', 'confidence']],
+            column_config={
+                'price': st.column_config.NumberColumn(format="$%.8f"),
+                'p_up': st.column_config.NumberColumn(format="%.3f"),
+                'p_down': st.column_config.NumberColumn(format="%.3f"),
+                'confidence': st.column_config.NumberColumn(format="%.3f"),
+            },
+            use_container_width=True,
+            hide_index=True
         )
 
-    # Table of missed entries (current)
+    # Display missed sells table
+    if not missed_sells_df.empty:
+        st.markdown("#### Missed SELL Signals (when in position)")
+        filtered_sells = missed_sells_df[missed_sells_df['asset'].isin(sel_assets)] if sel_assets else missed_sells_df
+        display_sells = filtered_sells.copy()
+        display_sells['timestamp'] = pd.to_datetime(display_sells['timestamp']).dt.strftime("%Y-%m-%d %H:%M:%S")
+        st.dataframe(
+            display_sells[['asset', 'timestamp', 'price', 'p_up', 'p_down', 'confidence']],
+            column_config={
+                'price': st.column_config.NumberColumn(format="$%.8f"),
+                'p_up': st.column_config.NumberColumn(format="%.3f"),
+                'p_down': st.column_config.NumberColumn(format="%.3f"),
+                'confidence': st.column_config.NumberColumn(format="%.3f"),
+            },
+            use_container_width=True,
+            hide_index=True
+        )
+
+    # Original missed entries (for reference)
     if not enriched_current.empty:
+        st.markdown("#### Traditional Missed Entries (confirmation-based)")
         v = enriched_current[enriched_current["asset"].isin(sel_assets)] if sel_assets else enriched_current
         vv = v.copy()
         vv["signal_time"] = pd.to_datetime(vv["signal_time"]).dt.strftime("%Y-%m-%d %H:%M:%S")
@@ -992,50 +1276,15 @@ with tab5:
             }, hide_index=True, use_container_width=True
         )
 
-        # Download enriched CSV
-        csv = vv.to_csv(index=False).encode("utf-8")
-        st.download_button("⬇️ Download Missed Entries CSV", data=csv, file_name="missed_entries_enriched.csv", mime="text/csv")
-
-    # Proposed overrides JSON (from current misses)
-    def propose_overrides(enriched):
-        if enriched.empty: return {}
-        out = {}
-        for a, g in enriched.groupby("asset"):
-            g = g.dropna(subset=["actual_bounce_pct","minutes_to_confirm"])
-            if g.empty: continue
-            b = float(np.percentile(g["actual_bounce_pct"], 80))
-            tout = float(np.percentile(g["minutes_to_confirm"], 90))
-            b = min(max(b, 0.0008), 0.01)  # guardrails
-            tout = int(min(max(tout, 7), 180))
-            out[a] = {"confirmation_bounce_pct": round(b, 6), "timeout_minutes": tout}
-        return out
-
-    import json, math
-    recs = propose_overrides(enriched_current) if not enriched_current.empty else {}
-    if recs:
-        overrides = {"dynamic_entry_per_asset": {}}
-        for a, r in recs.items():
-            cycles = int(math.ceil((r["timeout_minutes"]*60)/20))  # 20s cycle
-            overrides["dynamic_entry_per_asset"][a] = {
-                "confirmation_bounce_pct": r["confirmation_bounce_pct"],
-                "timeout_cycles": cycles
-            }
-        st.markdown("#### Suggested overrides (paste into `asset_overrides.json`)")
-        st.code(json.dumps(overrides, indent=2))
-        st.download_button("⬇️ Download Overrides JSON",
-                           data=json.dumps(overrides, indent=2).encode("utf-8"),
-                           file_name="asset_overrides_patch.json", mime="application/json")
-
 # ----- TAB 6: Overall Stats -----
 with tab6:
-    st.markdown("### 📊 Overall Stats (Current vs What-If)")
+    st.markdown("### 📊 Overall Stats (Position-Aware Analysis)")
     colA, colB, colC, colD = st.columns(4)
-    cur_miss = 0 if missed_current is None else len(missed_current)
-    try_miss = 0 if missed_try is None else len(missed_try)
-    delta_miss = cur_miss - try_miss
-    with colA: st.metric("Missed Entries (Current)", f"{cur_miss:,}")
-    with colB: st.metric("Missed Entries (What-If)", f"{try_miss:,}", delta=f"{delta_miss:+d}")
-
+    
+    with colA: st.metric("Missed BUYs (no pos)", f"{len(missed_buys_df):,}")
+    with colB: st.metric("Missed SELLs (in pos)", f"{len(missed_sells_df):,}")
+    with colC: st.metric("Total Position-Aware", f"{len(missed_buys_df) + len(missed_sells_df):,}")
+    
     # Validity rate for OPENs
     action_col = "action" if "action" in trades_df.columns else ("unified_action" if "unified_action" in trades_df.columns else None)
     if not trades_df.empty and action_col:
@@ -1045,50 +1294,37 @@ with tab6:
         vr = 0 if total_opens == 0 else (valid_opens / total_opens) * 100
     else:
         total_opens, valid_opens, vr = 0, 0, 0
-    with colC: st.metric("OPEN Orders", f"{total_opens:,}")
     with colD: st.metric("OPEN Validity Rate", f"{vr:.1f}%")
 
     st.markdown("---")
-    # Per-asset breakdowns: current vs what-if
-    if (not (missed_current is None or missed_current.empty)) or (not (missed_try is None or missed_try.empty)):
-        def as_counts(df):
-            if df is None or df.empty: return pd.DataFrame(columns=["asset","missed"])
-            c = df.groupby("asset").size().reset_index(name="missed")
-            return c
-        cur = as_counts(missed_current).rename(columns={"missed":"missed_current"})
-        tr = as_counts(missed_try).rename(columns={"missed":"missed_try"})
-        merged = pd.merge(cur, tr, on="asset", how="outer").fillna(0)
-        merged["delta"] = merged["missed_current"] - merged["missed_try"]
-        merged = merged.sort_values(["delta","missed_current"], ascending=[False, False])
+    
+    # Per-asset breakdown for position-aware missed signals
+    if not missed_buys_df.empty or not missed_sells_df.empty:
+        st.markdown("#### Position-Aware Missed Signals by Asset")
+        
+        buy_counts = missed_buys_df.groupby('asset').size().rename('missed_buys') if not missed_buys_df.empty else pd.Series(name='missed_buys', dtype=int)
+        sell_counts = missed_sells_df.groupby('asset').size().rename('missed_sells') if not missed_sells_df.empty else pd.Series(name='missed_sells', dtype=int)
+        
+        combined = pd.concat([buy_counts, sell_counts], axis=1).fillna(0).astype(int)
+        combined['total_missed'] = combined['missed_buys'] + combined['missed_sells']
+        combined = combined.sort_values('total_missed', ascending=False)
+        
         st.dataframe(
-            merged,
+            combined.reset_index(),
             column_config={
-                "missed_current": st.column_config.NumberColumn(format="%d"),
-                "missed_try": st.column_config.NumberColumn(format="%d"),
-                "delta": st.column_config.NumberColumn(format="%+d"),
-            }, use_container_width=True, hide_index=True
-        )
-    else:
-        st.info("No missed entries detected in either mode.")
-
-    # Reason counts (current)
-    if not enriched_current.empty:
-        diag = enriched_current.assign(
-            reason=np.where(enriched_current["minutes_to_confirm"] > DYNAMIC_ENTRY_UI["timeout_minutes"], "Timeout",
-                     np.where(enriched_current["actual_bounce_pct"] < enriched_current["required_bounce_pct"], "Bounce too small",
-                     "Not matched to OPEN"))
-        )
-        st.markdown("#### Missed Reasons — Totals (Current)")
-        st.dataframe(
-            diag["reason"].value_counts().rename_axis("reason").reset_index(name="count"),
-            use_container_width=True, hide_index=True
+                'missed_buys': st.column_config.NumberColumn(format="%d"),
+                'missed_sells': st.column_config.NumberColumn(format="%d"),
+                'total_missed': st.column_config.NumberColumn(format="%d"),
+            },
+            use_container_width=True,
+            hide_index=True
         )
 
     st.markdown("---")
     st.caption(
-        "Use the **Tuning (what-if)** controls in the sidebar to simulate policy changes. "
-        "Compare **Missed Entries** current vs what-if, then export the **Overrides JSON** "
-        "to update your bot's `asset_overrides.json` (it hot-reloads)."
+        "The position-aware analysis shows missed BUY signals only when you weren't in a position, "
+        "and missed SELL signals only when you were in a position. This provides more actionable insights "
+        "compared to traditional confirmation-based analysis."
     )
 
 # ====== Sidebar: Open Positions compact ======
@@ -1154,5 +1390,3 @@ with st.sidebar:
             </div>
             """, unsafe_allow_html=True
         )
-
-
