@@ -230,9 +230,9 @@ def get_position_at_time(position_history: pd.DataFrame, asset: str, timestamp: 
     else:
         return 0.0
 
-# NEW: Identify missed buy signals (when not in position)
+# NEW: Identify missed buy signals (when in position)
 def identify_missed_buys(market_df: pd.DataFrame, trades_df: pd.DataFrame, position_history: pd.DataFrame, cfg: dict) -> pd.DataFrame:
-    """Find missed buy opportunities when not in position."""
+    """Find missed buy opportunities when in position (for adding to position)."""
     if market_df is None or market_df.empty:
         return pd.DataFrame()
     
@@ -276,7 +276,7 @@ def identify_missed_buys(market_df: pd.DataFrame, trades_df: pd.DataFrame, posit
             signal_time = row['__t__']
             position_qty = get_position_at_time(position_history, asset, signal_time)
             
-            if position_qty > 0:  # Already in position, don't mark as missed buy
+            if position_qty <= 0:  # Not in position, don't mark as missed buy
                 continue
             
             # Check if there was an executed buy within the match window
@@ -859,20 +859,20 @@ with tab1:
                                                       "<br>Reason: %{customdata[1]}<extra></extra>",
                                     ))
 
-                    # NEW: Overlay missed buys when not in position
+                    # NEW: Overlay missed buys when in position
                     if not missed_buys_df.empty:
                         asset_missed_buys = missed_buys_df[missed_buys_df['asset'] == selected_asset].copy()
                         if not asset_missed_buys.empty:
                             asset_missed_buys['__t__'] = _series_to_utc(asset_missed_buys['timestamp'])
                             fig.add_trace(go.Scatter(
                                 x=asset_missed_buys['__t__'], y=asset_missed_buys['price'],
-                                mode="markers", name="Missed BUY (no position)",
+                                mode="markers", name="Missed BUY (add to position)",
                                 marker=dict(symbol="circle-open", size=12, color="#4caf50", line=dict(width=2, color="#4caf50")),
                                 customdata=np.stack((
                                     asset_missed_buys['p_up'], asset_missed_buys['p_down'],
                                     asset_missed_buys['confidence'], asset_missed_buys['price']
                                 ), axis=-1),
-                                hovertemplate="<b>Missed BUY (no position)</b><br>%{x|%Y-%m-%d %H:%M}<br>"
+                                hovertemplate="<b>Missed BUY (add to position)</b><br>%{x|%Y-%m-%d %H:%M}<br>"
                                               "Price: $%{customdata[3]:.8f}<br>"
                                               "P(Up): %{customdata[0]:.3f}<br>"
                                               "P(Down): %{customdata[1]:.3f}<br>"
@@ -925,7 +925,7 @@ with tab1:
                     
                     col1, col2 = st.columns(2)
                     with col1:
-                        st.caption(f"Missed BUYs (no position): **{miss_buys_now}**")
+                        st.caption(f"Missed BUYs (add to position): **{miss_buys_now}**")
                     with col2:
                         st.caption(f"Missed SELLs (in position): **{miss_sells_now}**")
 
@@ -1045,7 +1045,7 @@ with tab5:
     # Summary metrics
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("Missed BUYs (no position)", f"{len(missed_buys_df):,}")
+        st.metric("Missed BUYs (add to position)", f"{len(missed_buys_df):,}")
     with col2:
         st.metric("Missed SELLs (in position)", f"{len(missed_sells_df):,}")
     with col3:
@@ -1070,7 +1070,7 @@ with tab5:
 
     # Display missed buys table
     if not missed_buys_df.empty:
-        st.markdown("#### Missed BUY Signals (when not in position)")
+        st.markdown("#### Missed BUY Signals (when in position - add to position)")
         filtered_buys = missed_buys_df[missed_buys_df['asset'].isin(sel_assets)] if sel_assets else missed_buys_df
         display_buys = filtered_buys.copy()
         display_buys['timestamp'] = pd.to_datetime(display_buys['timestamp']).dt.strftime("%Y-%m-%d %H:%M:%S")
@@ -1127,7 +1127,7 @@ with tab6:
     st.markdown("### 📊 Overall Stats (Position-Aware Analysis)")
     colA, colB, colC, colD = st.columns(4)
     
-    with colA: st.metric("Missed BUYs (no pos)", f"{len(missed_buys_df):,}")
+    with colA: st.metric("Missed BUYs (add to pos)", f"{len(missed_buys_df):,}")
     with colB: st.metric("Missed SELLs (in pos)", f"{len(missed_sells_df):,}")
     with colC: st.metric("Total Position-Aware", f"{len(missed_buys_df) + len(missed_sells_df):,}")
     
@@ -1185,9 +1185,9 @@ with tab6:
 
     st.markdown("---")
     st.caption(
-        "The position-aware analysis shows missed BUY signals only when you weren't in a position, "
-        "and missed SELL signals only when you were in a position. This provides more actionable insights "
-        "for actual trading decisions."
+        "The position-aware analysis shows missed BUY signals only when you were in a position "
+        "(opportunities to add to positions), and missed SELL signals only when you were in a position. "
+        "This provides insights for position sizing and adding to existing holdings based on strong signals."
     )
 
 # ====== Sidebar: Open Positions compact ======
