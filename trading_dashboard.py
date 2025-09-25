@@ -128,8 +128,26 @@ def normalize_prob_columns(df: pd.DataFrame) -> pd.DataFrame:
     if "p_down" not in df.columns: df["p_down"] = np.nan
     return df
 
+# Parse to pandas Timestamps (may be tz-aware or naive)
 def _parsed_ts(s: pd.Series) -> pd.Series:
     return pd.to_datetime(s, errors="coerce")
+
+# NEW: normalize any timestamp series to tz-aware UTC, derived from data only
+def _series_to_utc(s: pd.Series) -> pd.Series:
+    """Return a tz-aware UTC series regardless of input being naive or mixed."""
+    ts = _parsed_ts(s)
+    # If any tz-aware values exist, convert; otherwise localize as UTC
+    try:
+        if getattr(ts.dt, "tz", None) is not None:
+            return ts.dt.tz_convert("UTC")
+        else:
+            return ts.dt.tz_localize("UTC")
+    except Exception:
+        # Fallback: attempt to localize entire series
+        try:
+            return ts.dt.tz_localize("UTC")
+        except Exception:
+            return ts  # last resort
 
 def seconds_since_last_run() -> int:
     return int(time.time() - st.session_state.get("last_refresh", 0))
@@ -196,7 +214,7 @@ def flag_threshold_violations(trades: pd.DataFrame) -> pd.DataFrame:
 # === Dynamic entry config (defaults for CURRENT policy) ===
 DYNAMIC_ENTRY_UI = {
     "confirmation_bounce_pct": 0.0025,   # 0.25% bounce
-    "timeout_minutes": 40,               # ~100 cycles @ 20s ≈ 33m; use a buffer
+    "timeout_minutes": 40,               # ~100 cycles @ 20s ≈ 33m; buffer
     "cooldown_minutes": 10,
     "match_window_minutes": 5,
 }
@@ -232,7 +250,7 @@ def _first_confirmation_window(asset_df, start_idx, bounce_pct, timeout_td):
                 return i, best_low
     return None, None
 
-# ---- FIX: detector accepts a config and uses correct Timedelta ----
+# FIXED: accepts cfg and uses proper Timedelta
 def identify_missed_entries(market_df: pd.DataFrame, trades_df: pd.DataFrame, cfg: dict | None = None) -> pd.DataFrame:
     """
     Find (asset, signal_time, confirm_time, expected_price, pu, pd, confidence) where
@@ -550,14 +568,26 @@ with st.sidebar:
         if st.button("↻", help="Force refresh"):
             st.cache_data.clear(); st.session_state.last_refresh = time.time(); st.rerun()
 
-    # Data freshness alarm
+    # Data freshness / alignment based on DATA ONLY (no system 'now')
     if not market_df.empty and "timestamp" in market_df.columns:
-        now = pd.Timestamp.utcnow()
-        mk_max = _parsed_ts(market_df["timestamp"]).max()
-        if pd.notna(mk_max):
-            age_min = (now - mk_max).total_seconds() / 60
-            if age_min > 10:
-                st.error(f"Market data appears stale: ~{age_min:.1f} minutes old. Tuning may be unreliable.")
+        mk_ts = _series_to_utc(market_df["timestamp"])
+        mk_min, mk_max = mk_ts.min(), mk_ts.max()
+
+        if not trades_df.empty and "timestamp" in trades_df.columns:
+            tr_ts = _series_to_utc(trades_df["timestamp"])
+            tr_min, tr_max = tr_ts.min(), tr_ts.max()
+            # Positive -> market is newer (trades are lagging)
+            lag_minutes = (mk_max - tr_max).total_seconds() / 60.0
+            st.caption(f"📈 Market window: {mk_min.strftime('%Y-%m-%d %H:%M:%S %Z')} → {mk_max.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+            st.caption(f"🧾 Trades window: {tr_min.strftime('%Y-%m-%d %H:%M:%S %Z')} → {tr_max.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+            if lag_minutes > 10:
+                st.error(f"Trades appear ~{lag_minutes:.1f} min behind market.")
+            elif lag_minutes < -10:
+                st.warning(f"Trades extend ~{-lag_minutes:.1f} min beyond market data (check sources).")
+            else:
+                st.success("Trades and market data are time-aligned.")
+        else:
+            st.caption(f"📈 Market window: {mk_min.strftime('%Y-%m-%d %H:%M:%S %Z')} → {mk_max.strftime('%Y-%m-%d %H:%M:%S %Z')}")
 
     st.markdown("---")
     st.markdown(f"**Trades:** {'✅' if not trades_df.empty else '⚠️'} {len(trades_df):,}")
@@ -587,7 +617,15 @@ with st.sidebar:
 
 # ========= Debug panel =========
 with st.expander("🔎 Data Freshness Debug", expanded=True):
-    # Trades freshness
+    # Unified windows (UTC, data-driven)
+    if not market_df.empty and "timestamp" in market_df.columns:
+        mk_ts = _series_to_utc(market_df["timestamp"])
+        st.write(f"**Market window (UTC):** {mk_ts.min()} → {mk_ts.max()}")
+    if not trades_df.empty and "timestamp" in trades_df.columns:
+        tr_ts = _series_to_utc(trades_df["timestamp"])
+        st.write(f"**Trades window (UTC):** {tr_ts.min()} → {tr_ts.max()}")
+
+    # Trades freshness detail
     if not trades_df.empty and "timestamp" in trades_df.columns:
         trades_debug = trades_df.copy(); trades_debug["__parsed_ts__"] = _parsed_ts(trades_debug["timestamp"])
         trades_valid = trades_debug.dropna(subset=["__parsed_ts__"])
@@ -606,7 +644,7 @@ with st.expander("🔎 Data Freshness Debug", expanded=True):
         st.write("**Latest Trade Timestamp:** No trade data")
     st.write(f"**Total Trades:** {len(trades_df):,}")
 
-    # Market freshness
+    # Market freshness detail
     if not market_df.empty and "timestamp" in market_df.columns:
         market_debug = market_df.copy(); market_debug["__parsed_ts__"] = _parsed_ts(market_debug["timestamp"])
         market_valid = market_debug.dropna(subset=["__parsed_ts__"])
@@ -651,8 +689,9 @@ with tab1:
         if asset_market.empty:
             st.warning(f"No market data found for {selected_asset}.")
         else:
-            asset_market_sorted = asset_market.sort_values(by="timestamp", key=lambda s: _parsed_ts(s))
-            end_parsed = _parsed_ts(asset_market_sorted["timestamp"]).max()
+            asset_ts = _series_to_utc(asset_market["timestamp"])
+            asset_market_sorted = asset_market.assign(__t__=asset_ts).sort_values("__t__")
+            end_parsed = asset_ts.max()
             if pd.isna(end_parsed): st.warning("Timestamps could not be parsed.")
             else:
                 if range_choice == "4 hours": start_parsed = end_parsed - timedelta(hours=4)
@@ -661,10 +700,10 @@ with tab1:
                 elif range_choice == "3 days": start_parsed = end_parsed - timedelta(days=3)
                 elif range_choice == "7 days": start_parsed = end_parsed - timedelta(days=7)
                 elif range_choice == "30 days": start_parsed = end_parsed - timedelta(days=30)
-                else: start_parsed = _parsed_ts(asset_market_sorted["timestamp"]).min()
+                else: start_parsed = asset_ts.min()
 
-                parsed_col = _parsed_ts(asset_market_sorted["timestamp"])
-                vis = asset_market_sorted.loc[(parsed_col >= start_parsed) & (parsed_col <= end_parsed)].copy()
+                vis_mask = (asset_market_sorted["__t__"] >= start_parsed) & (asset_market_sorted["__t__"] <= end_parsed)
+                vis = asset_market_sorted.loc[vis_mask].copy()
 
                 if vis.empty: st.warning(f"No data for {selected_asset} in range {range_choice}.")
                 else:
@@ -679,7 +718,7 @@ with tab1:
 
                     fig = go.Figure()
                     fig.add_trace(go.Candlestick(
-                        x=_parsed_ts(vis["timestamp"]),
+                        x=vis["__t__"],
                         open=vis["open"], high=vis["high"], low=vis["low"], close=vis["close"],
                         name=selected_asset, increasing_line_color="#26a69a", decreasing_line_color="#ef5350",
                         increasing_fillcolor="rgba(38,166,154,0.5)", decreasing_fillcolor="rgba(239,83,80,0.5)",
@@ -687,14 +726,15 @@ with tab1:
                     ))
 
                     # ML signals overlay
-                    if {"p_up", "p_down"}.issubset(vis.columns):
+                    sig_cols_ok = {"p_up", "p_down"}.issubset(vis.columns)
+                    if sig_cols_ok:
                         sig = vis.dropna(subset=["p_up", "p_down"]).copy()
                         if not sig.empty:
                             sig["confidence"] = (sig["p_up"] - sig["p_down"]).abs()
                             sizes = (sig["confidence"] * 100.0) / 5.0 + 3.0
                             colors = np.where(sig["p_down"] > sig["p_up"], "#ff6b6b", "#51cf66")
                             fig.add_trace(go.Scatter(
-                                x=_parsed_ts(sig["timestamp"]), y=sig["close"], mode="markers", name="ML Signals",
+                                x=sig["__t__"], y=sig["close"], mode="markers", name="ML Signals",
                                 marker=dict(size=sizes, color=colors, opacity=0.7, line=dict(width=1, color="white")),
                                 customdata=list(zip(sig["p_up"], sig["p_down"], sig["confidence"])),
                                 hovertemplate="<b>ML Signal</b><br>Time: %{x|%Y-%m-%d %H:%M}<br>"
@@ -707,9 +747,10 @@ with tab1:
                     if not trades_df.empty:
                         asset_trades = trades_df[trades_df["asset"] == selected_asset].copy()
                         if not asset_trades.empty and "timestamp" in asset_trades.columns:
-                            t_parsed = _parsed_ts(asset_trades["timestamp"])
-                            mask = (t_parsed >= start_parsed) & (t_parsed <= end_parsed)
+                            t_ts = _series_to_utc(asset_trades["timestamp"])
+                            mask = (t_ts >= start_parsed) & (t_ts <= end_parsed)
                             asset_trades = asset_trades.loc[mask].copy()
+
                             if not asset_trades.empty:
                                 marker_y = y_min + (vis["high"].max() - vis["low"].min()) * 0.02
                                 buys = asset_trades[asset_trades["unified_action"].str.lower().isin(["buy","open"])].copy()
@@ -724,7 +765,7 @@ with tab1:
                                     buy_reval_str = buys["revalidated_hint"].map(lambda x: "Re-validated bounce: Yes" if x else "")
                                     buy_viol_str = buys["violation_reason"].fillna("")
                                     fig.add_trace(go.Scatter(
-                                        x=_parsed_ts(buys["timestamp"]), y=[marker_y] * len(buys), mode="markers", name="BUY",
+                                        x=_series_to_utc(buys["timestamp"]), y=[marker_y] * len(buys), mode="markers", name="BUY",
                                         marker=dict(symbol="triangle-up", size=14, color=buy_colors, line=dict(width=1, color="white")),
                                         customdata=np.stack((buy_prices, buy_reasons, buy_valid_str, buy_reval_str, buy_viol_str), axis=-1),
                                         hovertemplate="<b>BUY</b> @ $%{customdata[0]:.8f}<br>%{x|%H:%M:%S}"
@@ -737,7 +778,7 @@ with tab1:
                                     sell_prices = sells["price"].apply(float)
                                     sell_reasons = sells.get("reason", pd.Series([""] * len(sells))).fillna("")
                                     fig.add_trace(go.Scatter(
-                                        x=_parsed_ts(sells["timestamp"]), y=[marker_y] * len(sells), mode="markers", name="SELL",
+                                        x=_series_to_utc(sells["timestamp"]), y=[marker_y] * len(sells), mode="markers", name="SELL",
                                         marker=dict(symbol="triangle-down", size=14, color="#f44336", line=dict(width=1, color="white")),
                                         customdata=np.stack((sell_prices, sell_reasons), axis=-1),
                                         hovertemplate="<b>SELL</b> @ $%{customdata[0]:.8f}<br>%{x|%H:%M:%S}"
@@ -748,10 +789,10 @@ with tab1:
                     if not enriched_current.empty:
                         misses = enriched_current[enriched_current["asset"] == selected_asset].copy()
                         if not misses.empty:
-                            misses["__t__"] = _parsed_ts(misses["confirm_time"])
-                            misses = misses.sort_values("__t__")
+                            misses["_t"] = _series_to_utc(misses["confirm_time"])
+                            misses = misses.sort_values("_t")
                             fig.add_trace(go.Scatter(
-                                x=misses["__t__"], y=misses["expected_price"].astype(float),
+                                x=misses["_t"], y=misses["expected_price"].astype(float),
                                 mode="markers", name="Missed BUY (confirmed)",
                                 marker=dict(symbol="circle-open", size=12, line=dict(width=2)),
                                 customdata=np.stack((
@@ -988,13 +1029,13 @@ with tab5:
 # ----- TAB 6: Overall Stats -----
 with tab6:
     st.markdown("### 📊 Overall Stats (Current vs What-If)")
-    # Top metrics
     colA, colB, colC, colD = st.columns(4)
     cur_miss = 0 if missed_current is None else len(missed_current)
     try_miss = 0 if missed_try is None else len(missed_try)
     delta_miss = cur_miss - try_miss
     with colA: st.metric("Missed Entries (Current)", f"{cur_miss:,}")
     with colB: st.metric("Missed Entries (What-If)", f"{try_miss:,}", delta=f"{delta_miss:+d}")
+
     # Validity rate for OPENs
     action_col = "action" if "action" in trades_df.columns else ("unified_action" if "unified_action" in trades_df.columns else None)
     if not trades_df.empty and action_col:
@@ -1009,13 +1050,13 @@ with tab6:
 
     st.markdown("---")
     # Per-asset breakdowns: current vs what-if
-    if (not missed_current.empty) or (not missed_try.empty):
+    if (not (missed_current is None or missed_current.empty)) or (not (missed_try is None or missed_try.empty)):
         def as_counts(df):
             if df is None or df.empty: return pd.DataFrame(columns=["asset","missed"])
             c = df.groupby("asset").size().reset_index(name="missed")
             return c
-        cur = as_counts(missed_current); cur = cur.rename(columns={"missed":"missed_current"})
-        tr = as_counts(missed_try);     tr = tr.rename(columns={"missed":"missed_try"})
+        cur = as_counts(missed_current).rename(columns={"missed":"missed_current"})
+        tr = as_counts(missed_try).rename(columns={"missed":"missed_try"})
         merged = pd.merge(cur, tr, on="asset", how="outer").fillna(0)
         merged["delta"] = merged["missed_current"] - merged["missed_try"]
         merged = merged.sort_values(["delta","missed_current"], ascending=[False, False])
@@ -1050,7 +1091,7 @@ with tab6:
         "to update your bot's `asset_overrides.json` (it hot-reloads)."
     )
 
-# ====== Sidebar: Open Positions compact (unchanged core) ======
+# ====== Sidebar: Open Positions compact ======
 with st.sidebar:
     st.markdown("---")
     open_positions_df = calculate_open_positions(trades_df, market_df) if not trades_df.empty else pd.DataFrame()
