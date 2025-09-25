@@ -131,30 +131,44 @@ def normalize_prob_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 # Parse to pandas Timestamps (may be tz-aware or naive)
 def _parsed_ts(s: pd.Series) -> pd.Series:
+    # raw parse, no forced timezone
     return pd.to_datetime(s, errors="coerce")
+
 
 # tz-aware UTC (used internally for comparisons if needed)
 def _series_to_utc(s: pd.Series) -> pd.Series:
-    ts = pd.to_datetime(s, errors="coerce", utc=True)
+    """
+    Logic/comparison helper: interpret NAIVE timestamps as PST first, then convert to UTC.
+    (Previously we assumed naive==UTC, which shifted PST data by 8 hours.)
+    """
+    ts = pd.to_datetime(s, errors="coerce")
     try:
-        return ts.dt.tz_convert("UTC")
+        if getattr(ts.dt, "tz", None) is None:
+            # naive PST -> UTC
+            return ts.dt.tz_localize("America/Los_Angeles").dt.tz_convert("UTC")
+        else:
+            # aware -> UTC
+            return ts.dt.tz_convert("UTC")
     except Exception:
-        try:
-            return ts.dt.tz_localize("UTC")
-        except Exception:
-            return ts
+        return ts  # last resort
 
 # === NEW: tz-aware PST for all UI displays ===
 def _series_to_pst(s: pd.Series) -> pd.Series:
-    ts = pd.to_datetime(s, errors="coerce", utc=True)
+    """
+    Display helper: interpret NAIVE timestamps as PST, and convert aware timestamps to PST.
+    This matches your fetcher, which saves timestamps as NAIVE PST.
+    """
+    ts = pd.to_datetime(s, errors="coerce")
     try:
-        return ts.dt.tz_convert("America/Los_Angeles")
+        if getattr(ts.dt, "tz", None) is None:
+            # naive -> treat as PST
+            return ts.dt.tz_localize("America/Los_Angeles")
+        else:
+            # aware -> convert to PST
+            return ts.dt.tz_convert("America/Los_Angeles")
     except Exception:
-        try:
-            return ts.dt.tz_localize("UTC").dt.tz_convert("America/Los_Angeles")
-        except Exception:
-            return ts
-
+        return ts  # last resort
+        
 def _pick_ts_pst(df: pd.DataFrame, fallback_col: str = "timestamp") -> pd.Series:
     if "timestamp_pst" in df.columns:
         return _series_to_pst(df["timestamp_pst"])
@@ -653,25 +667,48 @@ with st.sidebar:
         if st.button("↻", help="Force refresh"):
             st.cache_data.clear(); st.session_state.last_refresh = time.time(); st.rerun()
 
-    # Data freshness / alignment based on DATA ONLY (no system 'now') — PST displays
-    if not market_df.empty and "timestamp" in market_df.columns:
-        mk_ts_pst = _pick_ts_pst(market_df)
-        mk_min_pst, mk_max_pst = mk_ts_pst.min(), mk_ts_pst.max()
-
-        if not trades_df.empty and "timestamp" in trades_df.columns:
-            tr_ts_pst = _series_to_pst(trades_df["timestamp"])
-            tr_min_pst, tr_max_pst = tr_ts_pst.min(), tr_ts_pst.max()
-            lag_minutes = (mk_max_pst - tr_max_pst).total_seconds() / 60.0
-            st.caption(f"📈 Market window (PST): {mk_min_pst.strftime('%Y-%m-%d %H:%M:%S %Z')} → {mk_max_pst.strftime('%Y-%m-%d %H:%M:%S %Z')}")
-            st.caption(f"🧾 Trades window (PST): {tr_min_pst.strftime('%Y-%m-%d %H:%M:%S %Z')} → {tr_max_pst.strftime('%Y-%m-%d %H:%M:%S %Z')}")
-            if lag_minutes > 10:
-                st.error(f"Trades appear ~{lag_minutes:.1f} min behind market.")
-            elif lag_minutes < -10:
-                st.warning(f"Trades extend ~{-lag_minutes:.1f} min beyond market data (check sources).")
-            else:
-                st.success("Trades and market data are time-aligned.")
+def _series_to_pst(s: pd.Series) -> pd.Series:
+    """
+    Interpret NAIVE timestamps as PST and convert tz-aware timestamps to PST.
+    This matches your fetcher, which writes NAIVE PST timestamps.
+    """
+    ts = pd.to_datetime(s, errors="coerce")
+    try:
+        # If the series is naive -> localize to PST; otherwise convert to PST
+        if getattr(ts.dt, "tz", None) is None:
+            return ts.dt.tz_localize("America/Los_Angeles")
         else:
-            st.caption(f"📈 Market window (PST): {mk_min_pst.strftime('%Y-%m-%d %H:%M:%S %Z')} → {mk_max_pst.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+            return ts.dt.tz_convert("America/Los_Angeles")
+    except Exception:
+        return ts  # fallback
+
+def _pick_ts_pst(df: pd.DataFrame) -> pd.Series:
+    """
+    Prefer a 'timestamp_pst' column if present (already PST),
+    otherwise use 'timestamp' and normalize to PST.
+    """
+    if "timestamp_pst" in df.columns:
+        return _series_to_pst(df["timestamp_pst"])
+    return _series_to_pst(df["timestamp"])
+
+# ==== SIDEBAR FRESHNESS (replace your whole block with this) ====
+
+# Data freshness / alignment based on DATA ONLY — PST displays (no lag banner)
+if not market_df.empty and "timestamp" in market_df.columns:
+    mk_ts_pst = _pick_ts_pst(market_df)
+    mk_min_pst, mk_max_pst = mk_ts_pst.min(), mk_ts_pst.max()
+    st.caption(
+        f"📈 Market window (PST): "
+        f"{mk_min_pst.strftime('%Y-%m-%d %H:%M:%S %Z')} → {mk_max_pst.strftime('%Y-%m-%d %H:%M:%S %Z')}"
+    )
+
+    if not trades_df.empty and "timestamp" in trades_df.columns:
+        tr_ts_pst = _series_to_pst(trades_df["timestamp"])
+        tr_min_pst, tr_max_pst = tr_ts_pst.min(), tr_ts_pst.max()
+        st.caption(
+            f"🧾 Trades window (PST): "
+            f"{tr_min_pst.strftime('%Y-%m-%d %H:%M:%S %Z')} → {tr_max_pst.strftime('%Y-%m-%d %H:%M:%S %Z')}"
+        )
 
     st.markdown("---")
     st.markdown(f"**Trades:** {'✅' if not trades_df.empty else '⚠️'} {len(trades_df):,}")
@@ -1269,3 +1306,4 @@ with st.sidebar:
             </div>
             """, unsafe_allow_html=True
         )
+
