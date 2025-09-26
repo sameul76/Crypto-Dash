@@ -49,8 +49,8 @@ def apply_theme():
         """, unsafe_allow_html=True)
 
 # ---- Google Drive links ----
-TRADES_LINK = "https://drive.google.com/file/d/1GDBkqqjPTER8rBCfD82bIYXsN8iVng2f/view?usp=sharing"
-MARKET_LINK = "https://drive.google.com/file/d/1u9yOqQdlcDOjXpKuYRZ83NiL9fetusti/view?usp=sharing"
+TRADES_LINK = "https://drive.google.com/file/d/1dTqotfpKIaXuspna10b2-YRLxVGhNqBp/view?usp=sharing"
+MARKET_LINK = "https://drive.google.com/file/d/1Cutl9cLovEezAd2zCXJwTsSdzqqqLfBO/view?usp=sharing"
 
 DEFAULT_ASSET = "GIGA-USD"
 REFRESH_INTERVAL = 300  # seconds
@@ -1253,6 +1253,7 @@ with st.sidebar:
             </div>
             """, unsafe_allow_html=True
         )
+
 
 
 
