@@ -131,44 +131,30 @@ def normalize_prob_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 # Parse to pandas Timestamps (may be tz-aware or naive)
 def _parsed_ts(s: pd.Series) -> pd.Series:
-    # raw parse, no forced timezone
     return pd.to_datetime(s, errors="coerce")
 
-
-# tz-aware UTC (used internally for comparisons if needed)
+# tz-aware UTC for comparisons
 def _series_to_utc(s: pd.Series) -> pd.Series:
-    """
-    Logic/comparison helper: interpret NAIVE timestamps as PST first, then convert to UTC.
-    (Previously we assumed naive==UTC, which shifted PST data by 8 hours.)
-    """
     ts = pd.to_datetime(s, errors="coerce")
     try:
         if getattr(ts.dt, "tz", None) is None:
-            # naive PST -> UTC
             return ts.dt.tz_localize("America/Los_Angeles").dt.tz_convert("UTC")
         else:
-            # aware -> UTC
             return ts.dt.tz_convert("UTC")
     except Exception:
-        return ts  # last resort
+        return ts
 
-# === NEW: tz-aware PST for all UI displays ===
+# === tz-aware PST for all UI displays ===
 def _series_to_pst(s: pd.Series) -> pd.Series:
-    """
-    Display helper: interpret NAIVE timestamps as PST, and convert aware timestamps to PST.
-    This matches your fetcher, which saves timestamps as NAIVE PST.
-    """
     ts = pd.to_datetime(s, errors="coerce")
     try:
         if getattr(ts.dt, "tz", None) is None:
-            # naive -> treat as PST
             return ts.dt.tz_localize("America/Los_Angeles")
         else:
-            # aware -> convert to PST
             return ts.dt.tz_convert("America/Los_Angeles")
     except Exception:
-        return ts  # last resort
-        
+        return ts
+
 def _pick_ts_pst(df: pd.DataFrame, fallback_col: str = "timestamp") -> pd.Series:
     if "timestamp_pst" in df.columns:
         return _series_to_pst(df["timestamp_pst"])
@@ -201,70 +187,48 @@ def _confidence_from_probs(pu, pdn):
 
 # NEW: Position tracking function
 def track_positions_over_time(trades_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Track position quantities over time for each asset.
-    Returns DataFrame with columns: timestamp, asset, position_qty
-    """
     if trades_df.empty:
         return pd.DataFrame(columns=['timestamp', 'asset', 'position_qty'])
-    
     position_history = []
-    
     for asset in trades_df['asset'].unique():
         asset_trades = trades_df[trades_df['asset'] == asset].copy()
         asset_trades['__parsed_ts__'] = _parsed_ts(asset_trades['timestamp'])
         asset_trades = asset_trades.sort_values('__parsed_ts__')
-        
         current_qty = Decimal(0)
-        
         for _, trade in asset_trades.iterrows():
             action = str(trade.get('unified_action', '')).lower().strip()
             qty = trade.get('quantity', Decimal(0))
-            
             if action in ['buy', 'open']:
                 current_qty += qty
             elif action in ['sell', 'close']:
                 current_qty -= qty
-                current_qty = max(current_qty, Decimal(0))  # Can't go negative
-            
+                current_qty = max(current_qty, Decimal(0))
             position_history.append({
                 'timestamp': trade['timestamp'],
                 'asset': asset,
                 'position_qty': float(current_qty)
             })
-    
     return pd.DataFrame(position_history)
 
-# NEW: Get position status at specific timestamp
 def get_position_at_time(position_history: pd.DataFrame, asset: str, timestamp: pd.Timestamp) -> float:
-    """Get position quantity for an asset at a specific timestamp."""
     if position_history.empty:
         return 0.0
-    
     asset_positions = position_history[position_history['asset'] == asset].copy()
     if asset_positions.empty:
         return 0.0
-    
     asset_positions['__parsed_ts__'] = _series_to_utc(asset_positions['timestamp'])
     asset_positions = asset_positions.sort_values('__parsed_ts__')
-    
-    # Find the last position update before or at the given timestamp
     mask = asset_positions['__parsed_ts__'] <= timestamp
     if mask.any():
         return asset_positions.loc[mask, 'position_qty'].iloc[-1]
     else:
         return 0.0
 
-# NEW: Identify missed buy signals (when in position)
 def identify_missed_buys(market_df: pd.DataFrame, trades_df: pd.DataFrame, position_history: pd.DataFrame, cfg: dict) -> pd.DataFrame:
-    """Find missed buy opportunities when in position (for adding to position)."""
     if market_df is None or market_df.empty:
         return pd.DataFrame()
-    
     missed_buys = []
     match_td = pd.Timedelta(minutes=int(cfg["match_window_minutes"]))
-    
-    # Get executed trades for comparison
     executed_buys = pd.DataFrame()
     if not trades_df.empty:
         action_col = "action" if "action" in trades_df.columns else "unified_action"
@@ -272,69 +236,49 @@ def identify_missed_buys(market_df: pd.DataFrame, trades_df: pd.DataFrame, posit
         executed_buys = trades_df.loc[buy_mask].copy()
         if not executed_buys.empty:
             executed_buys["__t__"] = _series_to_utc(executed_buys["timestamp"])
-    
     for asset in market_df['asset'].unique():
         if asset not in ASSET_THRESHOLDS:
             continue
-        
         asset_data = market_df[market_df['asset'] == asset].copy()
         asset_data['__t__'] = _series_to_utc(asset_data['timestamp'])
         asset_data = asset_data.sort_values('__t__')
-        
         th = ASSET_THRESHOLDS[asset]
-        
         for _, row in asset_data.iterrows():
-            # Check if this is a buy signal
             pu = pd.to_numeric(row.get("p_up"), errors="coerce")
             pdn = pd.to_numeric(row.get("p_down"), errors="coerce")
-            
             if pd.isna(pu) or pd.isna(pdn):
                 continue
-            
             conf = abs(pu - pdn)
             is_buy_signal = (pu > pdn) and (pu >= th["buy_threshold"]) and (conf >= th["min_confidence"])
-            
             if not is_buy_signal:
                 continue
-            
-            # Check if we were in a position at this time
             signal_time = row['__t__']
             position_qty = get_position_at_time(position_history, asset, signal_time)
-            
-            if position_qty <= 0:  # Not in position, don't mark as missed buy
+            if position_qty <= 0:
                 continue
-            
-            # Check if there was an executed buy within the match window
             executed = False
             if not executed_buys.empty:
                 asset_buys = executed_buys[executed_buys['asset'] == asset]
                 if not asset_buys.empty:
                     time_diffs = (asset_buys['__t__'] - signal_time).abs()
                     executed = (time_diffs <= match_td).any()
-            
             if not executed:
                 missed_buys.append({
                     'asset': asset,
-                    'timestamp': row['timestamp'],  # keep original; display layer will convert to PST
+                    'timestamp': row['timestamp'],
                     'price': float(row.get('close', 0)),
                     'p_up': float(pu),
                     'p_down': float(pdn),
                     'confidence': float(conf),
                     'signal_type': 'missed_buy'
                 })
-    
     return pd.DataFrame(missed_buys)
 
-# NEW: Identify missed sell signals (when in position)
 def identify_missed_sells(market_df: pd.DataFrame, trades_df: pd.DataFrame, position_history: pd.DataFrame, cfg: dict) -> pd.DataFrame:
-    """Find missed sell opportunities when in position."""
     if market_df is None or market_df.empty:
         return pd.DataFrame()
-    
     missed_sells = []
     match_td = pd.Timedelta(minutes=int(cfg["match_window_minutes"]))
-    
-    # Get executed sells for comparison
     executed_sells = pd.DataFrame()
     if not trades_df.empty:
         action_col = "action" if "action" in trades_df.columns else "unified_action"
@@ -342,57 +286,42 @@ def identify_missed_sells(market_df: pd.DataFrame, trades_df: pd.DataFrame, posi
         executed_sells = trades_df.loc[sell_mask].copy()
         if not executed_sells.empty:
             executed_sells["__t__"] = _series_to_utc(executed_sells["timestamp"])
-    
     for asset in market_df['asset'].unique():
         if asset not in ASSET_THRESHOLDS:
             continue
-        
         asset_data = market_df[market_df['asset'] == asset].copy()
         asset_data['__t__'] = _series_to_utc(asset_data['timestamp'])
         asset_data = asset_data.sort_values('__t__')
-        
         th = ASSET_THRESHOLDS[asset]
-        
         for _, row in asset_data.iterrows():
-            # Check if this is a sell signal
             pu = pd.to_numeric(row.get("p_up"), errors="coerce")
             pdn = pd.to_numeric(row.get("p_down"), errors="coerce")
-            
             if pd.isna(pu) or pd.isna(pdn):
                 continue
-            
             conf = abs(pu - pdn)
             is_sell_signal = (pdn > pu) and (pdn >= th["sell_threshold"]) and (conf >= th["min_confidence"])
-            
             if not is_sell_signal:
                 continue
-            
-            # Check if we were in a position at this time
             signal_time = row['__t__']
             position_qty = get_position_at_time(position_history, asset, signal_time)
-            
-            if position_qty <= 0:  # Not in position, don't mark as missed sell
+            if position_qty <= 0:
                 continue
-            
-            # Check if there was an executed sell within the match window
             executed = False
             if not executed_sells.empty:
                 asset_sells = executed_sells[executed_sells['asset'] == asset]
                 if not asset_sells.empty:
                     time_diffs = (asset_sells['__t__'] - signal_time).abs()
                     executed = (time_diffs <= match_td).any()
-            
             if not executed:
                 missed_sells.append({
                     'asset': asset,
-                    'timestamp': row['timestamp'],  # keep original; display layer will convert to PST
+                    'timestamp': row['timestamp'],
                     'price': float(row.get('close', 0)),
                     'p_up': float(pu),
                     'p_down': float(pdn),
                     'confidence': float(conf),
                     'signal_type': 'missed_sell'
                 })
-    
     return pd.DataFrame(missed_sells)
 
 def flag_threshold_violations(trades: pd.DataFrame) -> pd.DataFrame:
@@ -551,7 +480,7 @@ def calculate_pnl_and_metrics(trades_df: pd.DataFrame):
 def match_trades_fifo(trades_df: pd.DataFrame):
     if trades_df is None or trades_df.empty: return pd.DataFrame(), pd.DataFrame()
     tdf = trades_df.copy(); tdf["__parsed_ts__"] = _parsed_ts(tdf["timestamp"])
-    matched, open_df = [], []
+    matched, open_positions = [], []
     for asset, group in tdf.groupby("asset"):
         g = group.sort_values("__parsed_ts__").drop(columns="__parsed_ts__")
         buys = [row.to_dict() for _, row in g[g["unified_action"].isin(["buy", "open"])].iterrows()]
@@ -578,10 +507,10 @@ def match_trades_fifo(trades_df: pd.DataFrame):
                     sell_qty -= trade_qty
                     buys[0]["quantity"] -= trade_qty
                     if buys[0]["quantity"] < Decimal("1e-9"): buys.pop(0)
-        open_df.extend(buys)
+        open_positions.extend(buys)
 
     matched_df = pd.DataFrame(matched) if matched else pd.DataFrame()
-    open_df = pd.DataFrame(open_df) if open_df else pd.DataFrame()
+    open_df = pd.DataFrame(open_positions) if open_positions else pd.DataFrame()
     if not matched_df.empty:
         buy_cost = matched_df["Buy Price"] * matched_df["Quantity"]
         is_zero = buy_cost < Decimal("1e-18")
@@ -626,9 +555,11 @@ def calculate_open_positions(trades_df: pd.DataFrame, market_df: pd.DataFrame) -
                 open_time_str = "N/A"
                 if asset in position_open_times:
                     try:
-                        open_ts = pd.to_datetime(position_open_times[asset], errors="coerce", utc=True).tz_convert("America/Los_Angeles")
-                        if pd.notna(open_ts): open_time_str = open_ts.strftime("%H:%M")
-                    except: pass
+                        # Render PST for display (timestamps saved as naive PST)
+                        ts_pst = _series_to_pst(pd.Series([position_open_times[asset]])).iloc[0]
+                        if pd.notna(ts_pst): open_time_str = ts_pst.strftime("%H:%M")
+                    except: 
+                        pass
                 open_positions.append({
                     "Asset": asset, "Quantity": float(data["quantity"]),
                     "Avg. Entry Price": float(avg_entry), "Current Price": float(latest_price),
@@ -653,14 +584,17 @@ position_history = track_positions_over_time(trades_df) if not trades_df.empty e
 missed_buys_df = identify_missed_buys(market_df, trades_df, position_history, DYNAMIC_ENTRY_UI)
 missed_sells_df = identify_missed_sells(market_df, trades_df, position_history, DYNAMIC_ENTRY_UI)
 
-# ========= Sidebar =========
+# ========= Sidebar (SINGLE INSTANCE, unique keys) =========
 with st.sidebar:
     st.markdown("<h1 style='text-align:center;'>Crypto Strategy</h1>", unsafe_allow_html=True)
+
+    _SID = "sb_"  # namespace for keys
 
     # — Theme / refresh controls —
     col1, col2, col3 = st.columns([1, 1, 1])
     with col1:
-        if st.button("🌙" if st.session_state.theme == "light" else "☀️", help="Toggle theme"):
+        if st.button("🌙" if st.session_state.theme == "light" else "☀️",
+                     help="Toggle theme", key=_SID + "theme_btn"):
             st.session_state.theme = "dark" if st.session_state.theme == "light" else "light"
             st.rerun()
     with col2:
@@ -668,36 +602,13 @@ with st.sidebar:
             "🔄",
             value=st.session_state.get("auto_refresh_enabled", True),
             help="Auto-Refresh (5min)",
+            key=_SID + "auto_refresh_toggle",
         )
     with col3:
-        if st.button("↻", help="Force refresh"):
+        if st.button("↻", help="Force refresh", key=_SID + "force_refresh_btn"):
             st.cache_data.clear()
             st.session_state.last_refresh = time.time()
             st.rerun()
-
-    # ---------- PST helpers ----------
-    def _series_to_pst(s: pd.Series) -> pd.Series:
-        """
-        Interpret NAIVE timestamps as PST and convert tz-aware timestamps to PST.
-        Matches your fetcher, which writes NAIVE PST timestamps.
-        """
-        ts = pd.to_datetime(s, errors="coerce")
-        try:
-            # If naive -> localize to PST; if tz-aware -> convert to PST
-            if getattr(ts.dt, "tz", None) is None:
-                return ts.dt.tz_localize("America/Los_Angeles")
-            else:
-                return ts.dt.tz_convert("America/Los_Angeles")
-        except Exception:
-            return ts  # fallback without tz info if something is malformed
-
-    def _pick_ts_pst(df: pd.DataFrame) -> pd.Series:
-        """
-        Prefer 'timestamp_pst' when present; otherwise use 'timestamp' and normalize to PST.
-        """
-        if "timestamp_pst" in df.columns:
-            return _series_to_pst(df["timestamp_pst"])
-        return _series_to_pst(df["timestamp"])
 
     # ---------- Sidebar summary (PST) ----------
     st.markdown("### ML Signals with Price-Based Entry/Exit (displayed in PST)")
@@ -743,6 +654,7 @@ with st.sidebar:
             value=DYNAMIC_ENTRY_UI["confirmation_bounce_pct"],
             step=0.0001,
             format="%.4f",
+            key=_SID + "bounce_pct",
         )
     with tw_col2:
         ui_timeout_m = st.number_input(
@@ -751,9 +663,11 @@ with st.sidebar:
             max_value=180,
             value=DYNAMIC_ENTRY_UI["timeout_minutes"],
             step=1,
+            key=_SID + "timeout_min",
         )
     ui_match_m = st.number_input(
-        "Match window (±min)", 1, 20, DYNAMIC_ENTRY_UI["match_window_minutes"], 1
+        "Match window (±min)", 1, 20, DYNAMIC_ENTRY_UI["match_window_minutes"], 1,
+        key=_SID + "match_window",
     )
 
     DYNAMIC_ENTRY_TRY = dict(DYNAMIC_ENTRY_UI)
@@ -761,121 +675,9 @@ with st.sidebar:
     DYNAMIC_ENTRY_TRY["timeout_minutes"] = int(ui_timeout_m)
     DYNAMIC_ENTRY_TRY["match_window_minutes"] = int(ui_match_m)
 
-    # What-if missed signals (uses PST windows above; no lag banner)
+    # What-if missed signals (no lag banner here)
     missed_buys_try = identify_missed_buys(market_df, trades_df, position_history, DYNAMIC_ENTRY_TRY)
     missed_sells_try = identify_missed_sells(market_df, trades_df, position_history, DYNAMIC_ENTRY_TRY)
-# ========= Sidebar =========
-with st.sidebar:
-    st.markdown("<h1 style='text-align:center;'>Crypto Strategy</h1>", unsafe_allow_html=True)
-
-    # — Theme / refresh controls —
-    col1, col2, col3 = st.columns([1, 1, 1])
-    with col1:
-        if st.button("🌙" if st.session_state.theme == "light" else "☀️", help="Toggle theme"):
-            st.session_state.theme = "dark" if st.session_state.theme == "light" else "light"
-            st.rerun()
-    with col2:
-        st.session_state.auto_refresh_enabled = st.toggle(
-            "🔄",
-            value=st.session_state.get("auto_refresh_enabled", True),
-            help="Auto-Refresh (5min)",
-        )
-    with col3:
-        if st.button("↻", help="Force refresh"):
-            st.cache_data.clear()
-            st.session_state.last_refresh = time.time()
-            st.rerun()
-
-    # ---------- PST helpers ----------
-    def _series_to_pst(s: pd.Series) -> pd.Series:
-        """
-        Interpret NAIVE timestamps as PST and convert tz-aware timestamps to PST.
-        Matches your fetcher, which writes NAIVE PST timestamps.
-        """
-        ts = pd.to_datetime(s, errors="coerce")
-        try:
-            # If naive -> localize to PST; if tz-aware -> convert to PST
-            if getattr(ts.dt, "tz", None) is None:
-                return ts.dt.tz_localize("America/Los_Angeles")
-            else:
-                return ts.dt.tz_convert("America/Los_Angeles")
-        except Exception:
-            return ts  # fallback without tz info if something is malformed
-
-    def _pick_ts_pst(df: pd.DataFrame) -> pd.Series:
-        """
-        Prefer 'timestamp_pst' when present; otherwise use 'timestamp' and normalize to PST.
-        """
-        if "timestamp_pst" in df.columns:
-            return _series_to_pst(df["timestamp_pst"])
-        return _series_to_pst(df["timestamp"])
-
-    # ---------- Sidebar summary (PST) ----------
-    st.markdown("### ML Signals with Price-Based Entry/Exit (displayed in PST)")
-
-    # Market window (PST)
-    if not market_df.empty and "timestamp" in market_df.columns:
-        mk_ts_pst = _pick_ts_pst(market_df)
-        if not mk_ts_pst.empty:
-            mk_min_pst, mk_max_pst = mk_ts_pst.min(), mk_ts_pst.max()
-            st.caption(
-                f"📈 Market window (PST): "
-                f"{mk_min_pst.strftime('%Y-%m-%d %H:%M:%S %Z')} → "
-                f"{mk_max_pst.strftime('%Y-%m-%d %H:%M:%S %Z')}"
-            )
-
-    # Trades window (PST)
-    if not trades_df.empty and "timestamp" in trades_df.columns:
-        tr_ts_pst = _series_to_pst(trades_df["timestamp"])
-        if not tr_ts_pst.empty:
-            tr_min_pst, tr_max_pst = tr_ts_pst.min(), tr_ts_pst.max()
-            st.caption(
-                f"🧾 Trades window (PST): "
-                f"{tr_min_pst.strftime('%Y-%m-%d %H:%M:%S %Z')} → "
-                f"{tr_max_pst.strftime('%Y-%m-%d %H:%M:%S %Z')}"
-            )
-
-    st.markdown("---")
-
-    # Counts summary
-    st.markdown(f"**Trades:** {'✅' if not trades_df.empty else '⚠️'} {len(trades_df):,}")
-    st.markdown(f"**Market:** {'✅' if not market_df.empty else '❌'} {len(market_df):,}")
-    if not market_df.empty and "asset" in market_df.columns:
-        st.markdown(f"**Assets:** {market_df['asset'].nunique():,}")
-
-    st.markdown("---")
-    st.markdown("**🔧 Tuning (what-if)**")
-    tw_col1, tw_col2 = st.columns(2)
-    with tw_col1:
-        ui_bounce = st.number_input(
-            "Bounce (pct)",
-            min_value=0.0005,
-            max_value=0.01,
-            value=DYNAMIC_ENTRY_UI["confirmation_bounce_pct"],
-            step=0.0001,
-            format="%.4f",
-        )
-    with tw_col2:
-        ui_timeout_m = st.number_input(
-            "Timeout (min)",
-            min_value=7,
-            max_value=180,
-            value=DYNAMIC_ENTRY_UI["timeout_minutes"],
-            step=1,
-        )
-    ui_match_m = st.number_input(
-        "Match window (±min)", 1, 20, DYNAMIC_ENTRY_UI["match_window_minutes"], 1
-    )
-
-    DYNAMIC_ENTRY_TRY = dict(DYNAMIC_ENTRY_UI)
-    DYNAMIC_ENTRY_TRY["confirmation_bounce_pct"] = float(ui_bounce)
-    DYNAMIC_ENTRY_TRY["timeout_minutes"] = int(ui_timeout_m)
-    DYNAMIC_ENTRY_TRY["match_window_minutes"] = int(ui_match_m)
-
-    # What-if missed signals (uses PST windows above; no lag banner)
-    missed_buys_try = identify_missed_buys(market_df, trades_df, position_history, DYNAMIC_ENTRY_TRY)
-    missed_sells_try = identify_missed_sells(market_df, trades_df, position_history, DYNAMIC_ENTRY_TRY)
-
 
 # ========= Debug panel =========
 with st.expander("🔎 Data Freshness Debug", expanded=True):
@@ -949,7 +751,6 @@ with tab1:
         if asset_market.empty:
             st.warning(f"No market data found for {selected_asset}.")
         else:
-            # prefer timestamp_pst for UI, else convert timestamp -> PST
             src_ts = asset_market["timestamp_pst"] if "timestamp_pst" in asset_market.columns else asset_market["timestamp"]
             asset_ts = _series_to_pst(src_ts)
             asset_market_sorted = asset_market.assign(__t__=asset_ts).sort_values("__t__")
@@ -1162,8 +963,8 @@ with tab3:
             for col in ["Quantity","Buy Price","Sell Price","P&L ($)","P&L %"]:
                 if col in display_matched.columns: display_matched[col] = display_matched[col].apply(float)
             # Ensure PST when formatting
-            display_matched["Buy Time"]  = pd.to_datetime(display_matched["Buy Time"],  utc=True).dt.tz_convert("America/Los_Angeles").dt.strftime("%Y-%m-%d %H:%M:%S")
-            display_matched["Sell Time"] = pd.to_datetime(display_matched["Sell Time"], utc=True).dt.tz_convert("America/Los_Angeles").dt.strftime("%Y-%m-%d %H:%M:%S")
+            display_matched["Buy Time"]  = _series_to_pst(display_matched["Buy Time"]).dt.strftime("%Y-%m-%d %H:%M:%S")
+            display_matched["Sell Time"] = _series_to_pst(display_matched["Sell Time"]).dt.strftime("%Y-%m-%d %H:%M:%S")
             display_matched["Hold Time"] = display_matched["Hold Time"].apply(format_timedelta_hhmm)
             st.dataframe(
                 display_matched[["Asset","Quantity","Buy Time","Buy Price","Sell Time","Sell Price","Hold Time","P&L ($)","P&L %"]],
@@ -1184,7 +985,7 @@ with tab3:
             display_open = open_df.copy()
             for col in ["quantity","price"]:
                 if col in display_open.columns: display_open[col] = display_open[col].apply(float)
-            display_open["Time"] = pd.to_datetime(display_open["timestamp"], errors="coerce", utc=True).dt.tz_convert("America/Los_Angeles").dt.strftime("%Y-%m-%d %H:%M:%S")
+            display_open["Time"] = _series_to_pst(pd.to_datetime(display_open["timestamp"], errors="coerce")).dt.strftime("%Y-%m-%d %H:%M:%S")
             display_open = display_open.rename(columns={"asset":"Asset","quantity":"Quantity","price":"Price","reason":"Reason"})
             st.dataframe(
                 display_open[["Time","Asset","Quantity","Price","Reason"]],
@@ -1221,7 +1022,6 @@ with tab4:
                 st.metric("Validity Rate", f"{vr:.1f}%")
             if not invalid.empty:
                 show_cols = [c for c in ["timestamp","asset","price","p_up","p_down","confidence","reason","violation_reason"] if c in invalid.columns]
-                # Show PST in table by adding a display column (optional)
                 invalid_disp = invalid.copy()
                 invalid_disp["timestamp_pst"] = _series_to_pst(invalid_disp["timestamp"]).dt.strftime("%Y-%m-%d %H:%M:%S %Z")
                 st.markdown("#### ❗ Flagged OPENs")
@@ -1447,5 +1247,6 @@ with st.sidebar:
             </div>
             """, unsafe_allow_html=True
         )
+
 
 
