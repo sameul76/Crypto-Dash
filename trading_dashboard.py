@@ -579,20 +579,30 @@ with st.sidebar:
     st.markdown("### ML Signals with Price-Based Entry/Exit (displayed in PST)")
 
     if not market_df.empty and "timestamp_pst" in market_df.columns:
-        mk_min_pst, mk_max_pst = market_df["timestamp_pst"].min(), market_df["timestamp_pst"].max()
-        st.caption(
-            f"📈 Market window (PST): "
-            f"{mk_min_pst.strftime('%Y-%m-%d %H:%M:%S')} → "
-            f"{mk_max_pst.strftime('%Y-%m-%d %H:%M:%S')}"
-        )
+        # Filter out null/NaT values before finding min/max
+        valid_market_times = market_df["timestamp_pst"].dropna()
+        if not valid_market_times.empty:
+            mk_min_pst, mk_max_pst = valid_market_times.min(), valid_market_times.max()
+            st.caption(
+                f"📈 Market window (PST): "
+                f"{mk_min_pst.strftime('%Y-%m-%d %H:%M:%S')} → "
+                f"{mk_max_pst.strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+        else:
+            st.caption("📈 Market window (PST): No valid timestamps found")
 
     if not trades_df.empty and "timestamp_pst" in trades_df.columns:
-        tr_min_pst, tr_max_pst = trades_df["timestamp_pst"].min(), trades_df["timestamp_pst"].max()
-        st.caption(
-            f"🧾 Trades window (PST): "
-            f"{tr_min_pst.strftime('%Y-%m-%d %H:%M:%S')} → "
-            f"{tr_max_pst.strftime('%Y-%m-%d %H:%M:%S')}"
-        )
+        # Filter out null/NaT values before finding min/max
+        valid_trade_times = trades_df["timestamp_pst"].dropna()
+        if not valid_trade_times.empty:
+            tr_min_pst, tr_max_pst = valid_trade_times.min(), valid_trade_times.max()
+            st.caption(
+                f"🧾 Trades window (PST): "
+                f"{tr_min_pst.strftime('%Y-%m-%d %H:%M:%S')} → "
+                f"{tr_max_pst.strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+        else:
+            st.caption("🧾 Trades window (PST): No valid timestamps found")
 
     st.markdown("---")
     st.markdown(f"**Trades:** {'✅' if not trades_df.empty else '⚠️'} {len(trades_df):,}")
