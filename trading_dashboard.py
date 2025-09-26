@@ -484,7 +484,6 @@ def track_positions_over_time(trades_df: pd.DataFrame) -> pd.DataFrame:
                 'position_qty': float(current_qty)
             })
     return pd.DataFrame(position_history)
-
 def identify_missed_buys(market_df: pd.DataFrame, trades_df: pd.DataFrame, position_history: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     if market_df is None or market_df.empty or "timestamp_pst" not in market_df.columns:
         return pd.DataFrame()
@@ -510,10 +509,14 @@ def identify_missed_buys(market_df: pd.DataFrame, trades_df: pd.DataFrame, posit
             is_buy_signal = (pu > pdn) and (pu >= th["buy_threshold"]) and (conf >= th["min_confidence"])
             if not is_buy_signal:
                 continue
-            signal_time = row['timestamp_pst']  # PST datetime
-            position_qty = get_position_at_time(position_history, asset, signal_time)  # UTC-safe inside
-            if position_qty <= 0:
+
+            signal_time = row['timestamp_pst']
+            position_qty = get_position_at_time(position_history, asset, signal_time)
+            
+            # CORRECTED LOGIC: Skip if we are ALREADY in a position.
+            if position_qty > 0:
                 continue
+            
             executed = False
             if not executed_buys.empty:
                 asset_buys = executed_buys[executed_buys['asset'] == asset]
@@ -1262,3 +1265,4 @@ with st.sidebar:
             </div>
             """, unsafe_allow_html=True
         )
+
