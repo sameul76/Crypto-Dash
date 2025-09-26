@@ -657,60 +657,76 @@ missed_sells_df = identify_missed_sells(market_df, trades_df, position_history, 
 with st.sidebar:
     st.markdown("<h1 style='text-align:center;'>Crypto Strategy</h1>", unsafe_allow_html=True)
 
+    # — Theme / refresh controls —
     col1, col2, col3 = st.columns([1, 1, 1])
     with col1:
         if st.button("🌙" if st.session_state.theme == "light" else "☀️", help="Toggle theme"):
-            st.session_state.theme = "dark" if st.session_state.theme == "light" else "light"; st.rerun()
+            st.session_state.theme = "dark" if st.session_state.theme == "light" else "light"
+            st.rerun()
     with col2:
-        st.session_state.auto_refresh_enabled = st.toggle("🔄", value=st.session_state.get("auto_refresh_enabled", True), help="Auto-Refresh (5min)")
+        st.session_state.auto_refresh_enabled = st.toggle(
+            "🔄",
+            value=st.session_state.get("auto_refresh_enabled", True),
+            help="Auto-Refresh (5min)",
+        )
     with col3:
         if st.button("↻", help="Force refresh"):
-            st.cache_data.clear(); st.session_state.last_refresh = time.time(); st.rerun()
+            st.cache_data.clear()
+            st.session_state.last_refresh = time.time()
+            st.rerun()
 
-def _series_to_pst(s: pd.Series) -> pd.Series:
-    """
-    Interpret NAIVE timestamps as PST and convert tz-aware timestamps to PST.
-    This matches your fetcher, which writes NAIVE PST timestamps.
-    """
-    ts = pd.to_datetime(s, errors="coerce")
-    try:
-        # If the series is naive -> localize to PST; otherwise convert to PST
-        if getattr(ts.dt, "tz", None) is None:
-            return ts.dt.tz_localize("America/Los_Angeles")
-        else:
-            return ts.dt.tz_convert("America/Los_Angeles")
-    except Exception:
-        return ts  # fallback
+    # ---------- PST helpers ----------
+    def _series_to_pst(s: pd.Series) -> pd.Series:
+        """
+        Interpret NAIVE timestamps as PST and convert tz-aware timestamps to PST.
+        Matches your fetcher, which writes NAIVE PST timestamps.
+        """
+        ts = pd.to_datetime(s, errors="coerce")
+        try:
+            # If naive -> localize to PST; if tz-aware -> convert to PST
+            if getattr(ts.dt, "tz", None) is None:
+                return ts.dt.tz_localize("America/Los_Angeles")
+            else:
+                return ts.dt.tz_convert("America/Los_Angeles")
+        except Exception:
+            return ts  # fallback without tz info if something is malformed
 
-def _pick_ts_pst(df: pd.DataFrame) -> pd.Series:
-    """
-    Prefer a 'timestamp_pst' column if present (already PST),
-    otherwise use 'timestamp' and normalize to PST.
-    """
-    if "timestamp_pst" in df.columns:
-        return _series_to_pst(df["timestamp_pst"])
-    return _series_to_pst(df["timestamp"])
+    def _pick_ts_pst(df: pd.DataFrame) -> pd.Series:
+        """
+        Prefer 'timestamp_pst' when present; otherwise use 'timestamp' and normalize to PST.
+        """
+        if "timestamp_pst" in df.columns:
+            return _series_to_pst(df["timestamp_pst"])
+        return _series_to_pst(df["timestamp"])
 
-# ==== SIDEBAR FRESHNESS (replace your whole block with this) ====
+    # ---------- Sidebar summary (PST) ----------
+    st.markdown("### ML Signals with Price-Based Entry/Exit (displayed in PST)")
 
-# Data freshness / alignment based on DATA ONLY — PST displays (no lag banner)
-if not market_df.empty and "timestamp" in market_df.columns:
-    mk_ts_pst = _pick_ts_pst(market_df)
-    mk_min_pst, mk_max_pst = mk_ts_pst.min(), mk_ts_pst.max()
-    st.caption(
-        f"📈 Market window (PST): "
-        f"{mk_min_pst.strftime('%Y-%m-%d %H:%M:%S %Z')} → {mk_max_pst.strftime('%Y-%m-%d %H:%M:%S %Z')}"
-    )
+    # Market window (PST)
+    if not market_df.empty and "timestamp" in market_df.columns:
+        mk_ts_pst = _pick_ts_pst(market_df)
+        if not mk_ts_pst.empty:
+            mk_min_pst, mk_max_pst = mk_ts_pst.min(), mk_ts_pst.max()
+            st.caption(
+                f"📈 Market window (PST): "
+                f"{mk_min_pst.strftime('%Y-%m-%d %H:%M:%S %Z')} → "
+                f"{mk_max_pst.strftime('%Y-%m-%d %H:%M:%S %Z')}"
+            )
 
+    # Trades window (PST)
     if not trades_df.empty and "timestamp" in trades_df.columns:
         tr_ts_pst = _series_to_pst(trades_df["timestamp"])
-        tr_min_pst, tr_max_pst = tr_ts_pst.min(), tr_ts_pst.max()
-        st.caption(
-            f"🧾 Trades window (PST): "
-            f"{tr_min_pst.strftime('%Y-%m-%d %H:%M:%S %Z')} → {tr_max_pst.strftime('%Y-%m-%d %H:%M:%S %Z')}"
-        )
+        if not tr_ts_pst.empty:
+            tr_min_pst, tr_max_pst = tr_ts_pst.min(), tr_ts_pst.max()
+            st.caption(
+                f"🧾 Trades window (PST): "
+                f"{tr_min_pst.strftime('%Y-%m-%d %H:%M:%S %Z')} → "
+                f"{tr_max_pst.strftime('%Y-%m-%d %H:%M:%S %Z')}"
+            )
 
     st.markdown("---")
+
+    # Counts summary
     st.markdown(f"**Trades:** {'✅' if not trades_df.empty else '⚠️'} {len(trades_df):,}")
     st.markdown(f"**Market:** {'✅' if not market_df.empty else '❌'} {len(market_df):,}")
     if not market_df.empty and "asset" in market_df.columns:
@@ -720,21 +736,146 @@ if not market_df.empty and "timestamp" in market_df.columns:
     st.markdown("**🔧 Tuning (what-if)**")
     tw_col1, tw_col2 = st.columns(2)
     with tw_col1:
-        ui_bounce = st.number_input("Bounce (pct)", min_value=0.0005, max_value=0.01,
-                                    value=DYNAMIC_ENTRY_UI["confirmation_bounce_pct"], step=0.0001, format="%.4f")
+        ui_bounce = st.number_input(
+            "Bounce (pct)",
+            min_value=0.0005,
+            max_value=0.01,
+            value=DYNAMIC_ENTRY_UI["confirmation_bounce_pct"],
+            step=0.0001,
+            format="%.4f",
+        )
     with tw_col2:
-        ui_timeout_m = st.number_input("Timeout (min)", min_value=7, max_value=180,
-                                       value=DYNAMIC_ENTRY_UI["timeout_minutes"], step=1)
-    ui_match_m = st.number_input("Match window (±min)", 1, 20, DYNAMIC_ENTRY_UI["match_window_minutes"], 1)
+        ui_timeout_m = st.number_input(
+            "Timeout (min)",
+            min_value=7,
+            max_value=180,
+            value=DYNAMIC_ENTRY_UI["timeout_minutes"],
+            step=1,
+        )
+    ui_match_m = st.number_input(
+        "Match window (±min)", 1, 20, DYNAMIC_ENTRY_UI["match_window_minutes"], 1
+    )
 
     DYNAMIC_ENTRY_TRY = dict(DYNAMIC_ENTRY_UI)
     DYNAMIC_ENTRY_TRY["confirmation_bounce_pct"] = float(ui_bounce)
     DYNAMIC_ENTRY_TRY["timeout_minutes"] = int(ui_timeout_m)
     DYNAMIC_ENTRY_TRY["match_window_minutes"] = int(ui_match_m)
 
-    # Compute WHAT-IF missed buys/sells with updated config
+    # What-if missed signals (uses PST windows above; no lag banner)
     missed_buys_try = identify_missed_buys(market_df, trades_df, position_history, DYNAMIC_ENTRY_TRY)
     missed_sells_try = identify_missed_sells(market_df, trades_df, position_history, DYNAMIC_ENTRY_TRY)
+# ========= Sidebar =========
+with st.sidebar:
+    st.markdown("<h1 style='text-align:center;'>Crypto Strategy</h1>", unsafe_allow_html=True)
+
+    # — Theme / refresh controls —
+    col1, col2, col3 = st.columns([1, 1, 1])
+    with col1:
+        if st.button("🌙" if st.session_state.theme == "light" else "☀️", help="Toggle theme"):
+            st.session_state.theme = "dark" if st.session_state.theme == "light" else "light"
+            st.rerun()
+    with col2:
+        st.session_state.auto_refresh_enabled = st.toggle(
+            "🔄",
+            value=st.session_state.get("auto_refresh_enabled", True),
+            help="Auto-Refresh (5min)",
+        )
+    with col3:
+        if st.button("↻", help="Force refresh"):
+            st.cache_data.clear()
+            st.session_state.last_refresh = time.time()
+            st.rerun()
+
+    # ---------- PST helpers ----------
+    def _series_to_pst(s: pd.Series) -> pd.Series:
+        """
+        Interpret NAIVE timestamps as PST and convert tz-aware timestamps to PST.
+        Matches your fetcher, which writes NAIVE PST timestamps.
+        """
+        ts = pd.to_datetime(s, errors="coerce")
+        try:
+            # If naive -> localize to PST; if tz-aware -> convert to PST
+            if getattr(ts.dt, "tz", None) is None:
+                return ts.dt.tz_localize("America/Los_Angeles")
+            else:
+                return ts.dt.tz_convert("America/Los_Angeles")
+        except Exception:
+            return ts  # fallback without tz info if something is malformed
+
+    def _pick_ts_pst(df: pd.DataFrame) -> pd.Series:
+        """
+        Prefer 'timestamp_pst' when present; otherwise use 'timestamp' and normalize to PST.
+        """
+        if "timestamp_pst" in df.columns:
+            return _series_to_pst(df["timestamp_pst"])
+        return _series_to_pst(df["timestamp"])
+
+    # ---------- Sidebar summary (PST) ----------
+    st.markdown("### ML Signals with Price-Based Entry/Exit (displayed in PST)")
+
+    # Market window (PST)
+    if not market_df.empty and "timestamp" in market_df.columns:
+        mk_ts_pst = _pick_ts_pst(market_df)
+        if not mk_ts_pst.empty:
+            mk_min_pst, mk_max_pst = mk_ts_pst.min(), mk_ts_pst.max()
+            st.caption(
+                f"📈 Market window (PST): "
+                f"{mk_min_pst.strftime('%Y-%m-%d %H:%M:%S %Z')} → "
+                f"{mk_max_pst.strftime('%Y-%m-%d %H:%M:%S %Z')}"
+            )
+
+    # Trades window (PST)
+    if not trades_df.empty and "timestamp" in trades_df.columns:
+        tr_ts_pst = _series_to_pst(trades_df["timestamp"])
+        if not tr_ts_pst.empty:
+            tr_min_pst, tr_max_pst = tr_ts_pst.min(), tr_ts_pst.max()
+            st.caption(
+                f"🧾 Trades window (PST): "
+                f"{tr_min_pst.strftime('%Y-%m-%d %H:%M:%S %Z')} → "
+                f"{tr_max_pst.strftime('%Y-%m-%d %H:%M:%S %Z')}"
+            )
+
+    st.markdown("---")
+
+    # Counts summary
+    st.markdown(f"**Trades:** {'✅' if not trades_df.empty else '⚠️'} {len(trades_df):,}")
+    st.markdown(f"**Market:** {'✅' if not market_df.empty else '❌'} {len(market_df):,}")
+    if not market_df.empty and "asset" in market_df.columns:
+        st.markdown(f"**Assets:** {market_df['asset'].nunique():,}")
+
+    st.markdown("---")
+    st.markdown("**🔧 Tuning (what-if)**")
+    tw_col1, tw_col2 = st.columns(2)
+    with tw_col1:
+        ui_bounce = st.number_input(
+            "Bounce (pct)",
+            min_value=0.0005,
+            max_value=0.01,
+            value=DYNAMIC_ENTRY_UI["confirmation_bounce_pct"],
+            step=0.0001,
+            format="%.4f",
+        )
+    with tw_col2:
+        ui_timeout_m = st.number_input(
+            "Timeout (min)",
+            min_value=7,
+            max_value=180,
+            value=DYNAMIC_ENTRY_UI["timeout_minutes"],
+            step=1,
+        )
+    ui_match_m = st.number_input(
+        "Match window (±min)", 1, 20, DYNAMIC_ENTRY_UI["match_window_minutes"], 1
+    )
+
+    DYNAMIC_ENTRY_TRY = dict(DYNAMIC_ENTRY_UI)
+    DYNAMIC_ENTRY_TRY["confirmation_bounce_pct"] = float(ui_bounce)
+    DYNAMIC_ENTRY_TRY["timeout_minutes"] = int(ui_timeout_m)
+    DYNAMIC_ENTRY_TRY["match_window_minutes"] = int(ui_match_m)
+
+    # What-if missed signals (uses PST windows above; no lag banner)
+    missed_buys_try = identify_missed_buys(market_df, trades_df, position_history, DYNAMIC_ENTRY_TRY)
+    missed_sells_try = identify_missed_sells(market_df, trades_df, position_history, DYNAMIC_ENTRY_TRY)
+
 
 # ========= Debug panel =========
 with st.expander("🔎 Data Freshness Debug", expanded=True):
@@ -1306,4 +1447,5 @@ with st.sidebar:
             </div>
             """, unsafe_allow_html=True
         )
+
 
