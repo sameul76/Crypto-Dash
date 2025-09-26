@@ -960,13 +960,26 @@ with tab4:
                 vr = 0 if total_opens == 0 else (len(valid) / total_opens) * 100
                 st.metric("Validity Rate", f"{vr:.1f}%")
             if not invalid.empty:
-                show_cols = [c for c in ["timestamp_pst","asset","price","p_up","p_down","confidence","reason","violation_reason"] if c in invalid.columns]
                 invalid_disp = invalid.copy()
+                # Create timestamp string column if timestamp_pst exists
                 if "timestamp_pst" in invalid_disp.columns:
                     invalid_disp["timestamp_pst_str"] = invalid_disp["timestamp_pst"].dt.strftime("%Y-%m-%d %H:%M:%S")
+                    # Use timestamp_pst_str for display, exclude original timestamp_pst
+                    show_cols = [c for c in ["asset","price","p_up","p_down","confidence","reason","violation_reason"] if c in invalid_disp.columns]
+                    display_cols = ["timestamp_pst_str"] + show_cols
+                    sort_col = "timestamp_pst_str"
+                else:
+                    # Fallback if no timestamp_pst column
+                    show_cols = [c for c in ["asset","price","p_up","p_down","confidence","reason","violation_reason"] if c in invalid_disp.columns]
+                    display_cols = show_cols
+                    sort_col = show_cols[0] if show_cols else None
+                
                 st.markdown("#### ❗ Flagged OPENs")
-                st.dataframe(invalid_disp[["timestamp_pst_str"] + [c for c in show_cols if c != "timestamp_pst"]].sort_values("timestamp_pst_str"),
-                             use_container_width=True, hide_index=True)
+                if display_cols and sort_col:
+                    st.dataframe(invalid_disp[display_cols].sort_values(sort_col),
+                                 use_container_width=True, hide_index=True)
+                else:
+                    st.dataframe(invalid_disp, use_container_width=True, hide_index=True)
             else:
                 st.success("No violations detected 🎉")
             st.caption("Open = buy execution records; validity is evaluated against per-asset thresholds and logged probabilities at that time.")
