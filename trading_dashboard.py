@@ -133,17 +133,6 @@ def normalize_prob_columns(df: pd.DataFrame) -> pd.DataFrame:
 def _parsed_ts(s: pd.Series) -> pd.Series:
     return pd.to_datetime(s, errors="coerce")
 
-# tz-aware UTC for logic/comparisons
-def _series_to_utc(s: pd.Series) -> pd.Series:
-    ts = pd.to_datetime(s, errors="coerce")
-    try:
-        if getattr(ts.dt, "tz", None) is None:
-            return ts.dt.tz_localize("America/Los_Angeles").dt.tz_convert("UTC")  # trades are often PST-naive
-        else:
-            return ts.dt.tz_convert("UTC")
-    except Exception:
-        return ts
-
 # --- Ensure PST helpers (UI/display source of truth) ---
 def _ensure_pst_series(ts: pd.Series) -> pd.Series:
     """
@@ -200,15 +189,14 @@ def _confidence_from_probs(pu, pdn):
     if pd.isna(pu) or pd.isna(pdn): return np.nan
     return float(abs(float(pu) - float(pdn)))
 
-# NEW: Position tracking function
+# NEW: Position tracking function (using timestamp_pst only)
 def track_positions_over_time(trades_df: pd.DataFrame) -> pd.DataFrame:
     if trades_df.empty:
-        return pd.DataFrame(columns=['timestamp', 'asset', 'position_qty'])
+        return pd.DataFrame(columns=['timestamp_pst', 'asset', 'position_qty'])
     position_history = []
     for asset in trades_df['asset'].unique():
         asset_trades = trades_df[trades_df['asset'] == asset].copy()
-        asset_trades['__parsed_ts__'] = _parsed_ts(asset_trades['timestamp'])
-        asset_trades = asset_trades.sort_values('__parsed_ts__')
+        asset_trades = asset_trades.sort_values('timestamp_pst')
         current_qty = Decimal(0)
         for _, trade in asset_trades.iterrows():
             action = str(trade.get('unified_action', '')).lower().strip()
@@ -219,21 +207,20 @@ def track_positions_over_time(trades_df: pd.DataFrame) -> pd.DataFrame:
                 current_qty -= qty
                 current_qty = max(current_qty, Decimal(0))
             position_history.append({
-                'timestamp': trade['timestamp'],
+                'timestamp_pst': trade['timestamp_pst'],
                 'asset': asset,
                 'position_qty': float(current_qty)
             })
     return pd.DataFrame(position_history)
 
-def get_position_at_time(position_history: pd.DataFrame, asset: str, timestamp: pd.Timestamp) -> float:
+def get_position_at_time(position_history: pd.DataFrame, asset: str, timestamp_pst: pd.Timestamp) -> float:
     if position_history.empty:
         return 0.0
     asset_positions = position_history[position_history['asset'] == asset].copy()
     if asset_positions.empty:
         return 0.0
-    asset_positions['__parsed_ts__'] = _series_to_utc(asset_positions['timestamp'])
-    asset_positions = asset_positions.sort_values('__parsed_ts__')
-    mask = asset_positions['__parsed_ts__'] <= timestamp
+    asset_positions = asset_positions.sort_values('timestamp_pst')
+    mask = asset_positions['timestamp_pst'] <= timestamp_pst
     if mask.any():
         return asset_positions.loc[mask, 'position_qty'].iloc[-1]
     else:
@@ -249,14 +236,12 @@ def identify_missed_buys(market_df: pd.DataFrame, trades_df: pd.DataFrame, posit
         action_col = "action" if "action" in trades_df.columns else "unified_action"
         buy_mask = trades_df[action_col].astype(str).str.upper().isin(["OPEN", "BUY"])
         executed_buys = trades_df.loc[buy_mask].copy()
-        if not executed_buys.empty:
-            executed_buys["__t__"] = _series_to_utc(executed_buys["timestamp"])
+    
     for asset in market_df['asset'].unique():
         if asset not in ASSET_THRESHOLDS:
             continue
         asset_data = market_df[market_df['asset'] == asset].copy()
-        asset_data['__t__'] = _series_to_utc(asset_data['timestamp'])
-        asset_data = asset_data.sort_values('__t__')
+        asset_data = asset_data.sort_values('timestamp_pst')
         th = ASSET_THRESHOLDS[asset]
         for _, row in asset_data.iterrows():
             pu = pd.to_numeric(row.get("p_up"), errors="coerce")
@@ -267,7 +252,7 @@ def identify_missed_buys(market_df: pd.DataFrame, trades_df: pd.DataFrame, posit
             is_buy_signal = (pu > pdn) and (pu >= th["buy_threshold"]) and (conf >= th["min_confidence"])
             if not is_buy_signal:
                 continue
-            signal_time = row['__t__']
+            signal_time = row['timestamp_pst']
             position_qty = get_position_at_time(position_history, asset, signal_time)
             if position_qty <= 0:
                 continue
@@ -275,12 +260,12 @@ def identify_missed_buys(market_df: pd.DataFrame, trades_df: pd.DataFrame, posit
             if not executed_buys.empty:
                 asset_buys = executed_buys[executed_buys['asset'] == asset]
                 if not asset_buys.empty:
-                    time_diffs = (asset_buys['__t__'] - signal_time).abs()
+                    time_diffs = (asset_buys['timestamp_pst'] - signal_time).abs()
                     executed = (time_diffs <= match_td).any()
             if not executed:
                 missed_buys.append({
                     'asset': asset,
-                    'timestamp': row['timestamp'],
+                    'timestamp_pst': row['timestamp_pst'],
                     'price': float(row.get('close', 0)),
                     'p_up': float(pu),
                     'p_down': float(pdn),
@@ -299,14 +284,12 @@ def identify_missed_sells(market_df: pd.DataFrame, trades_df: pd.DataFrame, posi
         action_col = "action" if "action" in trades_df.columns else "unified_action"
         sell_mask = trades_df[action_col].astype(str).str.upper().isin(["CLOSE", "SELL"])
         executed_sells = trades_df.loc[sell_mask].copy()
-        if not executed_sells.empty:
-            executed_sells["__t__"] = _series_to_utc(executed_sells["timestamp"])
+    
     for asset in market_df['asset'].unique():
         if asset not in ASSET_THRESHOLDS:
             continue
         asset_data = market_df[market_df['asset'] == asset].copy()
-        asset_data['__t__'] = _series_to_utc(asset_data['timestamp'])
-        asset_data = asset_data.sort_values('__t__')
+        asset_data = asset_data.sort_values('timestamp_pst')
         th = ASSET_THRESHOLDS[asset]
         for _, row in asset_data.iterrows():
             pu = pd.to_numeric(row.get("p_up"), errors="coerce")
@@ -317,7 +300,7 @@ def identify_missed_sells(market_df: pd.DataFrame, trades_df: pd.DataFrame, posi
             is_sell_signal = (pdn > pu) and (pdn >= th["sell_threshold"]) and (conf >= th["min_confidence"])
             if not is_sell_signal:
                 continue
-            signal_time = row['__t__']
+            signal_time = row['timestamp_pst']
             position_qty = get_position_at_time(position_history, asset, signal_time)
             if position_qty <= 0:
                 continue
@@ -325,12 +308,12 @@ def identify_missed_sells(market_df: pd.DataFrame, trades_df: pd.DataFrame, posi
             if not executed_sells.empty:
                 asset_sells = executed_sells[executed_sells['asset'] == asset]
                 if not asset_sells.empty:
-                    time_diffs = (asset_sells['__t__'] - signal_time).abs()
+                    time_diffs = (asset_sells['timestamp_pst'] - signal_time).abs()
                     executed = (time_diffs <= match_td).any()
             if not executed:
                 missed_sells.append({
                     'asset': asset,
-                    'timestamp': row['timestamp'],
+                    'timestamp_pst': row['timestamp_pst'],
                     'price': float(row.get('close', 0)),
                     'p_up': float(pu),
                     'p_down': float(pdn),
@@ -450,9 +433,8 @@ def format_timedelta_hhmm(td):
 def calculate_pnl_and_metrics(trades_df: pd.DataFrame):
     if trades_df is None or trades_df.empty: return {}, pd.DataFrame(), {}
     df = trades_df.copy()
-    parsed_ts = _parsed_ts(df["timestamp"])
-    df["__parsed_ts__"] = parsed_ts
-    df = df.sort_values("__parsed_ts__").drop(columns="__parsed_ts__").reset_index(drop=True)
+    # Use timestamp_pst directly
+    df = df.sort_values("timestamp_pst").reset_index(drop=True)
 
     pnl_per_asset, positions = {}, {}
     df["pnl"], df["cumulative_pnl"] = Decimal(0), Decimal(0)
@@ -504,19 +486,20 @@ def calculate_pnl_and_metrics(trades_df: pd.DataFrame):
 
 def match_trades_fifo(trades_df: pd.DataFrame):
     if trades_df is None or trades_df.empty: return pd.DataFrame(), pd.DataFrame()
-    tdf = trades_df.copy(); tdf["__parsed_ts__"] = _parsed_ts(tdf["timestamp"])
+    tdf = trades_df.copy()
+    # Use timestamp_pst directly
     matched, open_df = [], []
     for asset, group in tdf.groupby("asset"):
-        g = group.sort_values("__parsed_ts__").drop(columns="__parsed_ts__")
+        g = group.sort_values("timestamp_pst")
         buys = [row.to_dict() for _, row in g[g["unified_action"].isin(["buy", "open"])].iterrows()]
         sells = [row.to_dict() for _, row in g[g["unified_action"].isin(["sell", "close"])].iterrows()]
         for sell in sells:
-            sell_ts = pd.to_datetime(sell["timestamp"], errors="coerce")
+            sell_ts = sell["timestamp_pst"]
             sell_qty = sell.get("quantity", Decimal(0))
             while sell_qty > Decimal("1e-9") and buys:
                 b0 = buys[0]
-                buy_ts = pd.to_datetime(b0["timestamp"], errors="coerce")
-                if pd.isna(buy_ts) or pd.isna(sell_ts) or buy_ts >= sell_ts: break
+                buy_ts = b0["timestamp_pst"]
+                if buy_ts >= sell_ts: break
                 buy_qty = b0.get("quantity", Decimal(0))
                 trade_qty = min(sell_qty, buy_qty)
                 if trade_qty > 0:
@@ -542,22 +525,22 @@ def match_trades_fifo(trades_df: pd.DataFrame):
         matched_df["P&L %"] = 100 * np.where(is_zero, 0, matched_df["P&L ($)"] / buy_cost)
         matched_df = matched_df.sort_values("Sell Time", ascending=False)
     if not open_df.empty:
-        open_df["__parsed_ts__"] = _parsed_ts(open_df["timestamp"])
-        open_df = open_df.sort_values("__parsed_ts__", ascending=False).drop(columns="__parsed_ts__")
+        open_df = open_df.sort_values("timestamp_pst", ascending=False)
     return matched_df, open_df
 
 def calculate_open_positions(trades_df: pd.DataFrame, market_df: pd.DataFrame) -> pd.DataFrame:
     if trades_df is None or trades_df.empty or market_df is None or market_df.empty: return pd.DataFrame()
     positions = {}; position_open_times = {}
-    tdf = trades_df.copy(); tdf["__parsed_ts__"] = _parsed_ts(tdf["timestamp"])
-    tdf = tdf.sort_values("__parsed_ts__").drop(columns="__parsed_ts__")
+    tdf = trades_df.copy()
+    # Use timestamp_pst directly
+    tdf = tdf.sort_values("timestamp_pst")
 
     for _, row in tdf.iterrows():
         asset = row.get("asset", ""); action = str(row.get("unified_action", "")).lower().strip()
-        qty = row.get("quantity", Decimal(0)); price = row.get("price", Decimal(0)); timestamp = row.get("timestamp", "")
+        qty = row.get("quantity", Decimal(0)); price = row.get("price", Decimal(0)); timestamp_pst = row.get("timestamp_pst", "")
         if asset not in positions: positions[asset] = {"quantity": Decimal(0), "cost": Decimal(0)}
         if action in ["buy", "open"]:
-            if positions[asset]["quantity"] == 0: position_open_times[asset] = timestamp
+            if positions[asset]["quantity"] == 0: position_open_times[asset] = timestamp_pst
             positions[asset]["cost"] += qty * price; positions[asset]["quantity"] += qty
         elif action in ["sell", "close"]:
             if positions[asset]["quantity"] > 0:
@@ -572,9 +555,8 @@ def calculate_open_positions(trades_df: pd.DataFrame, market_df: pd.DataFrame) -
         if data["quantity"] > Decimal("1e-9"):
             latest_asset_rows = market_df[market_df["asset"] == asset]
             if not latest_asset_rows.empty:
-                # pick latest by PST column if available
-                ts_col = "timestamp_pst" if "timestamp_pst" in latest_asset_rows.columns else "timestamp"
-                idx = pd.to_datetime(latest_asset_rows[ts_col], errors="coerce").idxmax()
+                # Use timestamp_pst directly
+                idx = latest_asset_rows["timestamp_pst"].idxmax()
                 latest_price = Decimal(str(latest_asset_rows.loc[idx, "close"]))
                 avg_entry = data["cost"] / data["quantity"]
                 current_value = latest_price * data["quantity"]
@@ -582,8 +564,8 @@ def calculate_open_positions(trades_df: pd.DataFrame, market_df: pd.DataFrame) -
                 open_time_str = "N/A"
                 if asset in position_open_times:
                     try:
-                        # Render in PST for sidebar card
-                        open_ts = _ensure_pst_series(pd.Series([position_open_times[asset]])).iloc[0]
+                        # timestamp_pst is already PST-aware
+                        open_ts = position_open_times[asset]
                         if pd.notna(open_ts): open_time_str = open_ts.strftime("%H:%M")
                     except: pass
                 open_positions.append({
@@ -696,41 +678,30 @@ with st.expander("🔎 Data Freshness Debug", expanded=True):
     if not trades_df.empty and "timestamp_pst" in trades_df.columns:
         st.write(f"**Trades window (PST):** {trades_df['timestamp_pst'].min()} → {trades_df['timestamp_pst'].max()}")
 
-    if not trades_df.empty and "timestamp" in trades_df.columns:
-        trades_debug = trades_df.copy()
-        trades_debug["__parsed_ts__"] = _ensure_pst_series(trades_debug["timestamp"])
-        trades_valid = trades_debug.dropna(subset=["__parsed_ts__"])
+    if not trades_df.empty and "timestamp_pst" in trades_df.columns:
+        trades_valid = trades_df.dropna(subset=["timestamp_pst"])
         if not trades_valid.empty:
-            trades_sorted = trades_valid.sort_values("__parsed_ts__")
+            trades_sorted = trades_valid.sort_values("timestamp_pst")
             latest_idx = trades_sorted.index[-1]
-            st.write(f"**Latest Trade Timestamp (raw):** {trades_sorted.loc[latest_idx,'timestamp']}")
-            st.write(f"**Latest Trade Timestamp (PST):** {trades_sorted.loc[latest_idx,'__parsed_ts__']}")
+            st.write(f"**Latest Trade Timestamp (PST):** {trades_sorted.loc[latest_idx,'timestamp_pst']}")
             if len(trades_df) != len(trades_valid):
-                st.warning(f"⚠️ {len(trades_df) - len(trades_valid)} trades have unparseable timestamps")
+                st.warning(f"⚠️ {len(trades_df) - len(trades_valid)} trades have unparseable timestamp_pst")
         else:
-            st.error("❌ No valid timestamps found in trades data")
-            st.write("**Sample raw timestamps:**")
-            st.write(trades_df["timestamp"].head().tolist())
+            st.error("❌ No valid timestamp_pst found in trades data")
     else:
         st.write("**Latest Trade Timestamp:** No trade data")
     st.write(f"**Total Trades:** {len(trades_df):,}")
 
-    if not market_df.empty and "timestamp" in market_df.columns:
-        market_debug = market_df.copy()
-        market_debug["__parsed_ts__"] = market_df["timestamp_pst"] if "timestamp_pst" in market_df.columns else _market_to_pst(market_df["timestamp"])
-        market_valid = market_debug.dropna(subset=["__parsed_ts__"])
+    if not market_df.empty and "timestamp_pst" in market_df.columns:
+        market_valid = market_df.dropna(subset=["timestamp_pst"])
         if not market_valid.empty:
-            market_sorted = market_valid.sort_values("__parsed_ts__")
+            market_sorted = market_valid.sort_values("timestamp_pst")
             latest_idx = market_sorted.index[-1]
-            st.write(f"**Latest Market Timestamp (raw):** {market_sorted.loc[latest_idx,'timestamp']}")
-            st.write(f"**Latest Market Timestamp (PST):** {market_sorted.loc[latest_idx,'__parsed_ts__']}")
-            st.write(f"**Market timestamp dtype:** {market_df['timestamp'].dtype}")
+            st.write(f"**Latest Market Timestamp (PST):** {market_sorted.loc[latest_idx,'timestamp_pst']}")
             if len(market_df) != len(market_valid):
-                st.warning(f"⚠️ {len(market_df) - len(market_valid)} market records have unparseable timestamps")
+                st.warning(f"⚠️ {len(market_df) - len(market_valid)} market records have unparseable timestamp_pst")
         else:
-            st.error("❌ No valid timestamps found in market data")
-            st.write("**Sample raw timestamps:**")
-            st.write(market_df["timestamp"].head().tolist())
+            st.error("❌ No valid timestamp_pst found in market data")
         st.write(f"**Total Market Records:** {len(market_df):,}")
     else:
         st.write("**Market data:** None")
@@ -760,8 +731,8 @@ with tab1:
         if asset_market.empty:
             st.warning(f"No market data found for {selected_asset}.")
         else:
-            src_ts = asset_market["timestamp_pst"] if "timestamp_pst" in asset_market.columns else _ensure_pst_series(asset_market["timestamp"])
-            asset_ts = src_ts
+            # Use timestamp_pst directly
+            asset_ts = asset_market["timestamp_pst"]
             asset_market_sorted = asset_market.assign(__t__=asset_ts).sort_values("__t__")
             end_parsed = asset_ts.max()
             if pd.isna(end_parsed): st.warning("Timestamps could not be parsed.")
@@ -819,6 +790,7 @@ with tab1:
                     if not trades_df.empty:
                         asset_trades = trades_df[trades_df["asset"] == selected_asset].copy()
                         if not asset_trades.empty and "timestamp_pst" in asset_trades.columns:
+                            # Use timestamp_pst directly
                             t_ts = asset_trades["timestamp_pst"]
                             mask = (t_ts >= start_parsed) & (t_ts <= end_parsed)
                             asset_trades = asset_trades.loc[mask].copy()
@@ -861,7 +833,8 @@ with tab1:
                     if not missed_buys_df.empty:
                         asset_missed_buys = missed_buys_df[missed_buys_df['asset'] == selected_asset].copy()
                         if not asset_missed_buys.empty:
-                            asset_missed_buys['__t__'] = _ensure_pst_series(asset_missed_buys['timestamp'])
+                            # Use timestamp_pst directly
+                            asset_missed_buys['__t__'] = asset_missed_buys['timestamp_pst']
                             fig.add_trace(go.Scatter(
                                 x=asset_missed_buys['__t__'], y=asset_missed_buys['price'],
                                 mode="markers", name="Missed BUY (add to position)",
@@ -880,7 +853,8 @@ with tab1:
                     if not missed_sells_df.empty:
                         asset_missed_sells = missed_sells_df[missed_sells_df['asset'] == selected_asset].copy()
                         if not asset_missed_sells.empty:
-                            asset_missed_sells['__t__'] = _ensure_pst_series(asset_missed_sells['timestamp'])
+                            # Use timestamp_pst directly
+                            asset_missed_sells['__t__'] = asset_missed_sells['timestamp_pst']
                             fig.add_trace(go.Scatter(
                                 x=asset_missed_sells['__t__'], y=asset_missed_sells['price'],
                                 mode="markers", name="Missed SELL (in position)",
@@ -943,11 +917,11 @@ with tab2:
 
         if not trades_with_pnl.empty:
             plot_df = trades_with_pnl.copy()
-            plot_df["__parsed_ts__"] = trades_df["timestamp_pst"]
-            plot_df = plot_df.sort_values("__parsed_ts__")
+            # Use timestamp_pst directly
+            plot_df = plot_df.sort_values("timestamp_pst")
             plot_df["cumulative_pnl"] = plot_df["cumulative_pnl"].apply(float)
             fig_pnl = go.Figure()
-            fig_pnl.add_trace(go.Scatter(x=plot_df["__parsed_ts__"], y=plot_df["cumulative_pnl"], mode="lines", name="Cumulative P&L", line=dict(width=2)))
+            fig_pnl.add_trace(go.Scatter(x=plot_df["timestamp_pst"], y=plot_df["cumulative_pnl"], mode="lines", name="Cumulative P&L", line=dict(width=2)))
             fig_pnl.add_hline(y=0, line_dash="dash", line_color="gray", annotation_text="Break Even")
             chart_bg = "rgba(14,17,23,1)" if st.session_state.theme == "dark" else "rgba(255,255,255,1)"
             chart_grid = "rgba(59,66,82,0.3)" if st.session_state.theme == "dark" else "rgba(128,128,128,0.1)"
@@ -970,9 +944,9 @@ with tab3:
             display_matched = matched_df.copy()
             for col in ["Quantity","Buy Price","Sell Price","P&L ($)","P&L %"]:
                 if col in display_matched.columns: display_matched[col] = display_matched[col].apply(float)
-            # Show times in PST
-            display_matched["Buy Time"]  = _ensure_pst_series(display_matched["Buy Time"]).dt.strftime("%Y-%m-%d %H:%M:%S")
-            display_matched["Sell Time"] = _ensure_pst_series(display_matched["Sell Time"]).dt.strftime("%Y-%m-%d %H:%M:%S")
+            # Times are already in PST from timestamp_pst
+            display_matched["Buy Time"]  = display_matched["Buy Time"].dt.strftime("%Y-%m-%d %H:%M:%S")
+            display_matched["Sell Time"] = display_matched["Sell Time"].dt.strftime("%Y-%m-%d %H:%M:%S")
             display_matched["Hold Time"] = display_matched["Hold Time"].apply(format_timedelta_hhmm)
             st.dataframe(
                 display_matched[["Asset","Quantity","Buy Time","Buy Price","Sell Time","Sell Price","Hold Time","P&L ($)","P&L %"]],
@@ -993,7 +967,8 @@ with tab3:
             display_open = open_df.copy()
             for col in ["quantity","price"]:
                 if col in display_open.columns: display_open[col] = display_open[col].apply(float)
-            display_open["Time"] = _ensure_pst_series(display_open["timestamp"]).dt.strftime("%Y-%m-%d %H:%M:%S")
+            # Use timestamp_pst directly
+            display_open["Time"] = display_open["timestamp_pst"].dt.strftime("%Y-%m-%d %H:%M:%S")
             display_open = display_open.rename(columns={"asset":"Asset","quantity":"Quantity","price":"Price","reason":"Reason"})
             st.dataframe(
                 display_open[["Time","Asset","Quantity","Price","Reason"]],
@@ -1029,11 +1004,11 @@ with tab4:
                 vr = 0 if total_opens == 0 else (len(valid) / total_opens) * 100
                 st.metric("Validity Rate", f"{vr:.1f}%")
             if not invalid.empty:
-                show_cols = [c for c in ["timestamp","asset","price","p_up","p_down","confidence","reason","violation_reason"] if c in invalid.columns]
+                show_cols = [c for c in ["timestamp_pst","asset","price","p_up","p_down","confidence","reason","violation_reason"] if c in invalid.columns]
                 invalid_disp = invalid.copy()
-                invalid_disp["timestamp_pst_str"] = _ensure_pst_series(invalid_disp["timestamp"]).dt.strftime("%Y-%m-%d %H:%M:%S %Z")
+                invalid_disp["timestamp_pst_str"] = invalid_disp["timestamp_pst"].dt.strftime("%Y-%m-%d %H:%M:%S %Z")
                 st.markdown("#### ❗ Flagged OPENs")
-                st.dataframe(invalid_disp[["timestamp_pst_str"] + [c for c in show_cols if c != "timestamp"]].sort_values("timestamp_pst_str"),
+                st.dataframe(invalid_disp[["timestamp_pst_str"] + [c for c in show_cols if c != "timestamp_pst"]].sort_values("timestamp_pst_str"),
                              use_container_width=True, hide_index=True)
             else:
                 st.success("No violations detected 🎉")
@@ -1074,8 +1049,8 @@ with tab5:
         st.markdown("#### Missed BUY Signals (when in position - add to position)")
         filtered_buys = missed_buys_df[missed_buys_df['asset'].isin(sel_assets)] if sel_assets else missed_buys_df
         display_buys = filtered_buys.copy()
-        # render timestamps in PST
-        display_buys['timestamp'] = _series_to_pst(display_buys['timestamp']).dt.strftime("%Y-%m-%d %H:%M:%S")
+        # Use timestamp_pst directly
+        display_buys['timestamp'] = display_buys['timestamp_pst'].dt.strftime("%Y-%m-%d %H:%M:%S")
         st.dataframe(
             display_buys[['asset', 'timestamp', 'price', 'p_up', 'p_down', 'confidence']],
             column_config={
@@ -1093,7 +1068,8 @@ with tab5:
         st.markdown("#### Missed SELL Signals (when in position)")
         filtered_sells = missed_sells_df[missed_sells_df['asset'].isin(sel_assets)] if sel_assets else missed_sells_df
         display_sells = filtered_sells.copy()
-        display_sells['timestamp'] = _series_to_pst(display_sells['timestamp']).dt.strftime("%Y-%m-%d %H:%M:%S")
+        # Use timestamp_pst directly
+        display_sells['timestamp'] = display_sells['timestamp_pst'].dt.strftime("%Y-%m-%d %H:%M:%S")
         st.dataframe(
             display_sells[['asset', 'timestamp', 'price', 'p_up', 'p_down', 'confidence']],
             column_config={
@@ -1112,15 +1088,18 @@ with tab5:
         if not missed_buys_df.empty:
             buys_export = missed_buys_df.copy()
             buys_export['signal_type'] = 'missed_buy'
+            # Use timestamp_pst directly
+            buys_export['timestamp'] = buys_export['timestamp_pst'].dt.strftime("%Y-%m-%d %H:%M:%S")
             combined_missed.append(buys_export)
         if not missed_sells_df.empty:
             sells_export = missed_sells_df.copy()
             sells_export['signal_type'] = 'missed_sell'
+            # Use timestamp_pst directly
+            sells_export['timestamp'] = sells_export['timestamp_pst'].dt.strftime("%Y-%m-%d %H:%M:%S")
             combined_missed.append(sells_export)
         
         if combined_missed:
             export_df = pd.concat(combined_missed, ignore_index=True)
-            export_df['timestamp'] = _series_to_pst(export_df['timestamp']).dt.strftime("%Y-%m-%d %H:%M:%S")
             csv = export_df.to_csv(index=False).encode("utf-8")
             st.download_button("⬇️ Download Missed Signals CSV", data=csv, file_name="missed_signals.csv", mime="text/csv")
 
@@ -1255,7 +1234,3 @@ with st.sidebar:
             </div>
             """, unsafe_allow_html=True
         )
-
-
-
-
