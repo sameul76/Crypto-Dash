@@ -366,6 +366,55 @@ def load_data(trades_link: str, market_link: str):
         for col in ["quantity", "price", "usd_value", "pnl", "pnl_pct"]:
             if col in trades.columns:
                 trades[col] = trades[col].apply(lambda x: Decimal(str(x)) if pd.notna(x) else Decimal(0))
+        
+        # FIX: Ensure timestamp_pst is datetime, but DON'T reconvert if already correct
+        if "timestamp_pst" in trades.columns and not pd.api.types.is_datetime64_any_dtype(trades["timestamp_pst"]):
+             trades["timestamp_pst"] = pd.to_datetime(trades["timestamp_pst"], errors="coerce")
+
+
+    # ---- MARKET ----
+    if not market.empty:
+        market = lower_strip_cols(market)
+        if "product_id" in market.columns: market = market.rename(columns={"product_id": "asset"})
+        if "asset" in market.columns: market["asset"] = market["asset"].apply(unify_symbol)
+        market = normalize_prob_columns(market)
+        for col in ["open", "high", "low", "close"]:
+            if col in market.columns:
+                market[col] = pd.to_numeric(market[col], errors="coerce")
+
+        # FIX: Ensure timestamp_pst is datetime, but DON'T reconvert if already correct
+        if "timestamp_pst" in market.columns and not pd.api.types.is_datetime64_any_dtype(market["timestamp_pst"]):
+            market["timestamp_pst"] = pd.to_datetime(market["timestamp_pst"], errors="coerce")
+
+    return trades, market
+
+    # ---- TRADES ----
+    if not trades.empty:
+        trades = lower_strip_cols(trades)
+        colmap = {}
+        if "value" in trades.columns: colmap["value"] = "usd_value"
+        if "side" in trades.columns and "action" in trades.columns: colmap["side"] = "trade_direction"
+        elif "side" in trades.columns and "action" not in trades.columns: colmap["side"] = "action"
+        trades = trades.rename(columns=colmap)
+
+        if "action" in trades.columns:
+            trades["unified_action"] = (
+                trades["action"].astype(str).str.upper().map({"OPEN": "buy", "CLOSE": "sell"})
+                .fillna(trades["action"].astype(str).str.lower())
+            )
+        elif "trade_direction" in trades.columns:
+            trades["unified_action"] = trades["trade_direction"]
+        elif "side" in trades.columns:
+            trades["unified_action"] = trades["side"]
+        else:
+            trades["unified_action"] = "unknown"
+
+        if "asset" in trades.columns:
+            trades["asset"] = trades["asset"].apply(unify_symbol)
+
+        for col in ["quantity", "price", "usd_value", "pnl", "pnl_pct"]:
+            if col in trades.columns:
+                trades[col] = trades[col].apply(lambda x: Decimal(str(x)) if pd.notna(x) else Decimal(0))
 
         # Ensure timestamp_pst is datetime
         if "timestamp_pst" in trades.columns:
@@ -1204,3 +1253,4 @@ with st.sidebar:
             </div>
             """, unsafe_allow_html=True
         )
+
