@@ -3,13 +3,111 @@ import io
 import re
 import time
 from datetime import timedelta
+from decimal import Decimal, getcontext
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import requests
 import streamlit as st
-from decimal import Decimal, getcontext
+
+# =====================[ TIME FIX PATCH — BEGIN ]=====================
+
+TZ_PST = "America/Los_Angeles"
+
+def _ensure_time_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Ensure df['timestamp'] is tz-aware UTC (datetime64[ns, UTC]).
+    Also (re)build df['timestamp_pst'] as tz-aware PST datetimes (not strings),
+    so .dt ops & comparisons work everywhere.
+
+    Idempotent: safe to call multiple times.
+    """
+    if df is None or len(df) == 0:
+        return df
+
+    # 1) Make/repair UTC column
+    if "timestamp" in df.columns:
+        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
+    elif "timestamp_pst" in df.columns:
+        ts = pd.to_datetime(df["timestamp_pst"], errors="coerce")
+        # If parsed naive (rare), localize to PST then convert to UTC; else directly to UTC.
+        if getattr(ts.dt, "tz", None) is None:
+            ts = ts.dt.tz_localize(TZ_PST).dt.tz_convert("UTC")
+        else:
+            ts = ts.dt.tz_convert("UTC")
+        df["timestamp"] = ts
+    else:
+        # No usable time column; nothing to fix.
+        return df
+
+    # 2) Build PST datetimes for display (.dt ops keep working)
+    df["timestamp_pst"] = df["timestamp"].dt.tz_convert(TZ_PST)
+
+    # 3) Keep PST right after UTC (cosmetic)
+    cols = list(df.columns)
+    if "timestamp" in cols and "timestamp_pst" in cols:
+        c = cols.pop(cols.index("timestamp_pst"))
+        cols.insert(cols.index("timestamp") + 1, c)
+        df = df[cols]
+
+    return df
+
+def _as_utc(ts_like):
+    """
+    Convert a scalar (str | pandas.Timestamp | datetime) to tz-aware UTC Timestamp.
+    If naive, assume it’s UTC. If offset-aware (e.g., PST), convert to UTC.
+    """
+    t = pd.to_datetime(ts_like, errors="coerce")
+    if t is pd.NaT:
+        return t
+    if getattr(t, "tzinfo", None) is None:
+        return t.tz_localize("UTC")
+    return t.tz_convert("UTC")
+
+def normalize_all_times(*dfs):
+    """
+    Normalize multiple dataframes to have:
+      - df['timestamp'] tz-aware UTC
+      - df['timestamp_pst'] tz-aware PST
+    Returns them back in the same order.
+    """
+    out = []
+    for df in dfs:
+        out.append(_ensure_time_columns(df.copy() if df is not None else df))
+    return out
+
+def get_position_at_time(position_history: pd.DataFrame, asset: str, signal_time) -> float:
+    """
+    Returns the position quantity at the given signal_time for asset.
+    Compares on UTC to avoid timezone/type issues.
+    """
+    ph = position_history
+    if ph is None or ph.empty:
+        return 0.0
+
+    if "asset" in ph.columns:
+        ph = ph[ph["asset"] == asset].copy()
+        if ph.empty:
+            return 0.0
+
+    ph = _ensure_time_columns(ph)
+    ph["timestamp"] = pd.to_datetime(ph["timestamp"], utc=True, errors="coerce")
+
+    t_utc = _as_utc(signal_time)
+    if pd.isna(t_utc):
+        return 0.0
+
+    mask = ph["timestamp"] <= t_utc
+    if not mask.any():
+        return 0.0
+
+    for cand in ("position_qty", "quantity", "qty", "position_size"):
+        if cand in ph.columns:
+            return float(ph.loc[mask, cand].iloc[-1])
+
+    return 0.0
+# ======================[ TIME FIX PATCH — END ]======================
 
 # ========= App setup =========
 st.set_page_config(page_title="Crypto Trading Strategy", layout="wide")
@@ -154,182 +252,6 @@ def _confidence_from_probs(pu, pdn):
     if pd.isna(pu) or pd.isna(pdn): return np.nan
     return float(abs(float(pu) - float(pdn)))
 
-# Position tracking function (using timestamp_pst only)
-def track_positions_over_time(trades_df: pd.DataFrame) -> pd.DataFrame:
-    if trades_df.empty or "timestamp_pst" not in trades_df.columns:
-        return pd.DataFrame(columns=['timestamp_pst', 'asset', 'position_qty'])
-    position_history = []
-    for asset in trades_df['asset'].unique():
-        asset_trades = trades_df[trades_df['asset'] == asset].copy()
-        asset_trades = asset_trades.sort_values('timestamp_pst')
-        current_qty = Decimal(0)
-        for _, trade in asset_trades.iterrows():
-            action = str(trade.get('unified_action', '')).lower().strip()
-            qty = trade.get('quantity', Decimal(0))
-            if action in ['buy', 'open']:
-                current_qty += qty
-            elif action in ['sell', 'close']:
-                current_qty -= qty
-                current_qty = max(current_qty, Decimal(0))
-            position_history.append({
-                'timestamp_pst': trade['timestamp_pst'],
-                'asset': asset,
-                'position_qty': float(current_qty)
-            })
-    return pd.DataFrame(position_history)
-
-def get_position_at_time(position_history: pd.DataFrame, asset: str, timestamp_pst: pd.Timestamp) -> float:
-    if position_history.empty:
-        return 0.0
-    asset_positions = position_history[position_history['asset'] == asset].copy()
-    if asset_positions.empty:
-        return 0.0
-    asset_positions = asset_positions.sort_values('timestamp_pst')
-    mask = asset_positions['timestamp_pst'] <= timestamp_pst
-    if mask.any():
-        return asset_positions.loc[mask, 'position_qty'].iloc[-1]
-    else:
-        return 0.0
-
-def identify_missed_buys(market_df: pd.DataFrame, trades_df: pd.DataFrame, position_history: pd.DataFrame, cfg: dict) -> pd.DataFrame:
-    if market_df is None or market_df.empty or "timestamp_pst" not in market_df.columns:
-        return pd.DataFrame()
-    missed_buys = []
-    match_td = pd.Timedelta(minutes=int(cfg["match_window_minutes"]))
-    executed_buys = pd.DataFrame()
-    if not trades_df.empty and "timestamp_pst" in trades_df.columns:
-        action_col = "action" if "action" in trades_df.columns else "unified_action"
-        buy_mask = trades_df[action_col].astype(str).str.upper().isin(["OPEN", "BUY"])
-        executed_buys = trades_df.loc[buy_mask].copy()
-    
-    for asset in market_df['asset'].unique():
-        if asset not in ASSET_THRESHOLDS:
-            continue
-        asset_data = market_df[market_df['asset'] == asset].copy()
-        asset_data = asset_data.sort_values('timestamp_pst')
-        th = ASSET_THRESHOLDS[asset]
-        for _, row in asset_data.iterrows():
-            pu = pd.to_numeric(row.get("p_up"), errors="coerce")
-            pdn = pd.to_numeric(row.get("p_down"), errors="coerce")
-            if pd.isna(pu) or pd.isna(pdn):
-                continue
-            conf = abs(pu - pdn)
-            is_buy_signal = (pu > pdn) and (pu >= th["buy_threshold"]) and (conf >= th["min_confidence"])
-            if not is_buy_signal:
-                continue
-            signal_time = row['timestamp_pst']
-            position_qty = get_position_at_time(position_history, asset, signal_time)
-            if position_qty <= 0:
-                continue
-            executed = False
-            if not executed_buys.empty:
-                asset_buys = executed_buys[executed_buys['asset'] == asset]
-                if not asset_buys.empty:
-                    time_diffs = (asset_buys['timestamp_pst'] - signal_time).abs()
-                    executed = (time_diffs <= match_td).any()
-            if not executed:
-                missed_buys.append({
-                    'asset': asset,
-                    'timestamp_pst': row['timestamp_pst'],
-                    'price': float(row.get('close', 0)),
-                    'p_up': float(pu),
-                    'p_down': float(pdn),
-                    'confidence': float(conf),
-                    'signal_type': 'missed_buy'
-                })
-    return pd.DataFrame(missed_buys)
-
-def identify_missed_sells(market_df: pd.DataFrame, trades_df: pd.DataFrame, position_history: pd.DataFrame, cfg: dict) -> pd.DataFrame:
-    if market_df is None or market_df.empty or "timestamp_pst" not in market_df.columns:
-        return pd.DataFrame()
-    missed_sells = []
-    match_td = pd.Timedelta(minutes=int(cfg["match_window_minutes"]))
-    executed_sells = pd.DataFrame()
-    if not trades_df.empty and "timestamp_pst" in trades_df.columns:
-        action_col = "action" if "action" in trades_df.columns else "unified_action"
-        sell_mask = trades_df[action_col].astype(str).str.upper().isin(["CLOSE", "SELL"])
-        executed_sells = trades_df.loc[sell_mask].copy()
-    
-    for asset in market_df['asset'].unique():
-        if asset not in ASSET_THRESHOLDS:
-            continue
-        asset_data = market_df[market_df['asset'] == asset].copy()
-        asset_data = asset_data.sort_values('timestamp_pst')
-        th = ASSET_THRESHOLDS[asset]
-        for _, row in asset_data.iterrows():
-            pu = pd.to_numeric(row.get("p_up"), errors="coerce")
-            pdn = pd.to_numeric(row.get("p_down"), errors="coerce")
-            if pd.isna(pu) or pd.isna(pdn):
-                continue
-            conf = abs(pu - pdn)
-            is_sell_signal = (pdn > pu) and (pdn >= th["sell_threshold"]) and (conf >= th["min_confidence"])
-            if not is_sell_signal:
-                continue
-            signal_time = row['timestamp_pst']
-            position_qty = get_position_at_time(position_history, asset, signal_time)
-            if position_qty <= 0:
-                continue
-            executed = False
-            if not executed_sells.empty:
-                asset_sells = executed_sells[executed_sells['asset'] == asset]
-                if not asset_sells.empty:
-                    time_diffs = (asset_sells['timestamp_pst'] - signal_time).abs()
-                    executed = (time_diffs <= match_td).any()
-            if not executed:
-                missed_sells.append({
-                    'asset': asset,
-                    'timestamp_pst': row['timestamp_pst'],
-                    'price': float(row.get('close', 0)),
-                    'p_up': float(pu),
-                    'p_down': float(pdn),
-                    'confidence': float(conf),
-                    'signal_type': 'missed_sell'
-                })
-    return pd.DataFrame(missed_sells)
-
-def flag_threshold_violations(trades: pd.DataFrame) -> pd.DataFrame:
-    if trades.empty: return trades.copy()
-    df = trades.copy()
-    for col in ["p_up", "p_down", "confidence"]:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-    if "confidence" not in df.columns:
-        df["confidence"] = df.apply(lambda r: _confidence_from_probs(r.get("p_up"), r.get("p_down")), axis=1)
-    action_col = "action" if "action" in df.columns else ("unified_action" if "unified_action" in df.columns else None)
-    val_flags, reasons = [], []
-    for _, row in df.iterrows():
-        is_open = False
-        if action_col:
-            val = str(row.get(action_col, "")).upper()
-            is_open = (val == "OPEN" or val == "BUY")
-        if not is_open:
-            val_flags.append(True); reasons.append(""); continue
-        asset = row.get("asset"); th = ASSET_THRESHOLDS.get(asset)
-        if th is None:
-            val_flags.append(True); reasons.append(""); continue
-        pu, pdn, conf = row.get("p_up"), row.get("p_down"), row.get("confidence")
-        r = []
-        if pd.isna(pu) or pd.isna(pdn) or pd.isna(conf):
-            r.append("missing probabilities")
-        else:
-            if not (pu > pdn): r.append("p_up ≤ p_down")
-            if not (pu >= th["buy_threshold"]): r.append(f"p_up {pu:.3f} < buy_threshold {th['buy_threshold']:.2f}")
-            if not (conf >= th["min_confidence"]): r.append(f"confidence {conf:.3f} < min_confidence {th['min_confidence']:.2f}")
-        val_flags.append(len(r) == 0); reasons.append("; ".join(r))
-    df["valid_at_open"] = val_flags
-    df["violation_reason"] = reasons
-    reason_text = df.get("reason", pd.Series([""] * len(df))).astype(str).str.lower()
-    df["revalidated_hint"] = reason_text.str.contains("re-validated") | reason_text.str.contains("revalidated")
-    return df
-
-# === Dynamic entry config (for what-if analysis) ===
-DYNAMIC_ENTRY_UI = {
-    "confirmation_bounce_pct": 0.0025,
-    "timeout_minutes": 40,
-    "cooldown_minutes": 10,
-    "match_window_minutes": 5,
-}
-
 # ========= Data loading (cached) =========
 @st.cache_data(ttl=60)
 def load_data(trades_link: str, market_link: str):
@@ -366,58 +288,9 @@ def load_data(trades_link: str, market_link: str):
         for col in ["quantity", "price", "usd_value", "pnl", "pnl_pct"]:
             if col in trades.columns:
                 trades[col] = trades[col].apply(lambda x: Decimal(str(x)) if pd.notna(x) else Decimal(0))
-        
-        # FIX: Ensure timestamp_pst is datetime, but DON'T reconvert if already correct
+
+        # Ensure timestamp_pst is datetime if present (kept as tz-aware later)
         if "timestamp_pst" in trades.columns and not pd.api.types.is_datetime64_any_dtype(trades["timestamp_pst"]):
-             trades["timestamp_pst"] = pd.to_datetime(trades["timestamp_pst"], errors="coerce")
-
-
-    # ---- MARKET ----
-    if not market.empty:
-        market = lower_strip_cols(market)
-        if "product_id" in market.columns: market = market.rename(columns={"product_id": "asset"})
-        if "asset" in market.columns: market["asset"] = market["asset"].apply(unify_symbol)
-        market = normalize_prob_columns(market)
-        for col in ["open", "high", "low", "close"]:
-            if col in market.columns:
-                market[col] = pd.to_numeric(market[col], errors="coerce")
-
-        # FIX: Ensure timestamp_pst is datetime, but DON'T reconvert if already correct
-        if "timestamp_pst" in market.columns and not pd.api.types.is_datetime64_any_dtype(market["timestamp_pst"]):
-            market["timestamp_pst"] = pd.to_datetime(market["timestamp_pst"], errors="coerce")
-
-    return trades, market
-
-    # ---- TRADES ----
-    if not trades.empty:
-        trades = lower_strip_cols(trades)
-        colmap = {}
-        if "value" in trades.columns: colmap["value"] = "usd_value"
-        if "side" in trades.columns and "action" in trades.columns: colmap["side"] = "trade_direction"
-        elif "side" in trades.columns and "action" not in trades.columns: colmap["side"] = "action"
-        trades = trades.rename(columns=colmap)
-
-        if "action" in trades.columns:
-            trades["unified_action"] = (
-                trades["action"].astype(str).str.upper().map({"OPEN": "buy", "CLOSE": "sell"})
-                .fillna(trades["action"].astype(str).str.lower())
-            )
-        elif "trade_direction" in trades.columns:
-            trades["unified_action"] = trades["trade_direction"]
-        elif "side" in trades.columns:
-            trades["unified_action"] = trades["side"]
-        else:
-            trades["unified_action"] = "unknown"
-
-        if "asset" in trades.columns:
-            trades["asset"] = trades["asset"].apply(unify_symbol)
-
-        for col in ["quantity", "price", "usd_value", "pnl", "pnl_pct"]:
-            if col in trades.columns:
-                trades[col] = trades[col].apply(lambda x: Decimal(str(x)) if pd.notna(x) else Decimal(0))
-
-        # Ensure timestamp_pst is datetime
-        if "timestamp_pst" in trades.columns:
             trades["timestamp_pst"] = pd.to_datetime(trades["timestamp_pst"], errors="coerce")
 
     # ---- MARKET ----
@@ -430,10 +303,12 @@ def load_data(trades_link: str, market_link: str):
             if col in market.columns:
                 market[col] = pd.to_numeric(market[col], errors="coerce")
 
-        # Ensure timestamp_pst is datetime
-        if "timestamp_pst" in market.columns:
+        # Ensure timestamp_pst is datetime if present (kept as tz-aware later)
+        if "timestamp_pst" in market.columns and not pd.api.types.is_datetime64_any_dtype(market["timestamp_pst"]):
             market["timestamp_pst"] = pd.to_datetime(market["timestamp_pst"], errors="coerce")
 
+    # Normalize times (UTC math, PST display as tz-aware datetimes)
+    trades, market = normalize_all_times(trades, market)
     return trades, market
 
 # ========= P&L / Trades utils =========
@@ -587,6 +462,166 @@ def calculate_open_positions(trades_df: pd.DataFrame, market_df: pd.DataFrame) -
                 })
     return pd.DataFrame(open_positions)
 
+# Position tracking function (uses timestamp_pst for chronology; UTC is used in get_position_at_time)
+def track_positions_over_time(trades_df: pd.DataFrame) -> pd.DataFrame:
+    if trades_df.empty or "timestamp_pst" not in trades_df.columns:
+        return pd.DataFrame(columns=['timestamp_pst', 'asset', 'position_qty'])
+    position_history = []
+    for asset in trades_df['asset'].unique():
+        asset_trades = trades_df[trades_df['asset'] == asset].copy().sort_values('timestamp_pst')
+        current_qty = Decimal(0)
+        for _, trade in asset_trades.iterrows():
+            action = str(trade.get('unified_action', '')).lower().strip()
+            qty = trade.get('quantity', Decimal(0))
+            if action in ['buy', 'open']:
+                current_qty += qty
+            elif action in ['sell', 'close']:
+                current_qty -= qty
+                current_qty = max(current_qty, Decimal(0))
+            position_history.append({
+                'timestamp_pst': trade['timestamp_pst'],
+                'asset': asset,
+                'position_qty': float(current_qty)
+            })
+    return pd.DataFrame(position_history)
+
+def identify_missed_buys(market_df: pd.DataFrame, trades_df: pd.DataFrame, position_history: pd.DataFrame, cfg: dict) -> pd.DataFrame:
+    if market_df is None or market_df.empty or "timestamp_pst" not in market_df.columns:
+        return pd.DataFrame()
+    missed_buys = []
+    match_td = pd.Timedelta(minutes=int(cfg["match_window_minutes"]))
+    executed_buys = pd.DataFrame()
+    if not trades_df.empty and "timestamp_pst" in trades_df.columns:
+        action_col = "action" if "action" in trades_df.columns else "unified_action"
+        buy_mask = trades_df[action_col].astype(str).str.upper().isin(["OPEN", "BUY"])
+        executed_buys = trades_df.loc[buy_mask].copy()
+    
+    for asset in market_df['asset'].unique():
+        if asset not in ASSET_THRESHOLDS:
+            continue
+        asset_data = market_df[market_df['asset'] == asset].copy().sort_values('timestamp_pst')
+        th = ASSET_THRESHOLDS[asset]
+        for _, row in asset_data.iterrows():
+            pu = pd.to_numeric(row.get("p_up"), errors="coerce")
+            pdn = pd.to_numeric(row.get("p_down"), errors="coerce")
+            if pd.isna(pu) or pd.isna(pdn):
+                continue
+            conf = abs(pu - pdn)
+            is_buy_signal = (pu > pdn) and (pu >= th["buy_threshold"]) and (conf >= th["min_confidence"])
+            if not is_buy_signal:
+                continue
+            signal_time = row['timestamp_pst']  # PST datetime
+            position_qty = get_position_at_time(position_history, asset, signal_time)  # UTC-safe inside
+            if position_qty <= 0:
+                continue
+            executed = False
+            if not executed_buys.empty:
+                asset_buys = executed_buys[executed_buys['asset'] == asset]
+                if not asset_buys.empty:
+                    time_diffs = (asset_buys['timestamp_pst'] - signal_time).abs()
+                    executed = (time_diffs <= match_td).any()
+            if not executed:
+                missed_buys.append({
+                    'asset': asset,
+                    'timestamp_pst': row['timestamp_pst'],
+                    'price': float(row.get('close', 0)),
+                    'p_up': float(pu),
+                    'p_down': float(pdn),
+                    'confidence': float(conf),
+                    'signal_type': 'missed_buy'
+                })
+    return pd.DataFrame(missed_buys)
+
+def identify_missed_sells(market_df: pd.DataFrame, trades_df: pd.DataFrame, position_history: pd.DataFrame, cfg: dict) -> pd.DataFrame:
+    if market_df is None or market_df.empty or "timestamp_pst" not in market_df.columns:
+        return pd.DataFrame()
+    missed_sells = []
+    match_td = pd.Timedelta(minutes=int(cfg["match_window_minutes"]))
+    executed_sells = pd.DataFrame()
+    if not trades_df.empty and "timestamp_pst" in trades_df.columns:
+        action_col = "action" if "action" in trades_df.columns else "unified_action"
+        sell_mask = trades_df[action_col].astype(str).str.upper().isin(["CLOSE", "SELL"])
+        executed_sells = trades_df.loc[sell_mask].copy()
+    
+    for asset in market_df['asset'].unique():
+        if asset not in ASSET_THRESHOLDS:
+            continue
+        asset_data = market_df[market_df['asset'] == asset].copy().sort_values('timestamp_pst')
+        th = ASSET_THRESHOLDS[asset]
+        for _, row in asset_data.iterrows():
+            pu = pd.to_numeric(row.get("p_up"), errors="coerce")
+            pdn = pd.to_numeric(row.get("p_down"), errors="coerce")
+            if pd.isna(pu) or pd.isna(pdn):
+                continue
+            conf = abs(pu - pdn)
+            is_sell_signal = (pdn > pu) and (pdn >= th["sell_threshold"]) and (conf >= th["min_confidence"])
+            if not is_sell_signal:
+                continue
+            signal_time = row['timestamp_pst']  # PST datetime
+            position_qty = get_position_at_time(position_history, asset, signal_time)  # UTC-safe inside
+            if position_qty <= 0:
+                continue
+            executed = False
+            if not executed_sells.empty:
+                asset_sells = executed_sells[executed_sells['asset'] == asset]
+                if not asset_sells.empty:
+                    time_diffs = (asset_sells['timestamp_pst'] - signal_time).abs()
+                    executed = (time_diffs <= match_td).any()
+            if not executed:
+                missed_sells.append({
+                    'asset': asset,
+                    'timestamp_pst': row['timestamp_pst'],
+                    'price': float(row.get('close', 0)),
+                    'p_up': float(pu),
+                    'p_down': float(pdn),
+                    'confidence': float(conf),
+                    'signal_type': 'missed_sell'
+                })
+    return pd.DataFrame(missed_sells)
+
+def flag_threshold_violations(trades: pd.DataFrame) -> pd.DataFrame:
+    if trades.empty: return trades.copy()
+    df = trades.copy()
+    for col in ["p_up", "p_down", "confidence"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    if "confidence" not in df.columns:
+        df["confidence"] = df.apply(lambda r: _confidence_from_probs(r.get("p_up"), r.get("p_down")), axis=1)
+    action_col = "action" if "action" in df.columns else ("unified_action" if "unified_action" in df.columns else None)
+    val_flags, reasons = [], []
+    for _, row in df.iterrows():
+        is_open = False
+        if action_col:
+            val = str(row.get(action_col, "")).upper()
+            is_open = (val == "OPEN" or val == "BUY")
+        if not is_open:
+            val_flags.append(True); reasons.append(""); continue
+        asset = row.get("asset"); th = ASSET_THRESHOLDS.get(asset)
+        if th is None:
+            val_flags.append(True); reasons.append(""); continue
+        pu, pdn, conf = row.get("p_up"), row.get("p_down"), row.get("confidence")
+        r = []
+        if pd.isna(pu) or pd.isna(pdn) or pd.isna(conf):
+            r.append("missing probabilities")
+        else:
+            if not (pu > pdn): r.append("p_up ≤ p_down")
+            if not (pu >= th["buy_threshold"]): r.append(f"p_up {pu:.3f} < buy_threshold {th['buy_threshold']:.2f}")
+            if not (conf >= th["min_confidence"]): r.append(f"confidence {conf:.3f} < min_confidence {th['min_confidence']:.2f}")
+        val_flags.append(len(r) == 0); reasons.append("; ".join(r))
+    df["valid_at_open"] = val_flags
+    df["violation_reason"] = reasons
+    reason_text = df.get("reason", pd.Series([""] * len(df))).astype(str).str.lower()
+    df["revalidated_hint"] = reason_text.str.contains("re-validated") | reason_text.str.contains("revalidated")
+    return df
+
+# === Dynamic entry config (for what-if analysis) ===
+DYNAMIC_ENTRY_UI = {
+    "confirmation_bounce_pct": 0.0025,
+    "timeout_minutes": 40,
+    "cooldown_minutes": 10,
+    "match_window_minutes": 5,
+}
+
 # ========= Load + maybe refresh =========
 st.markdown("## Crypto Trading Strategy")
 st.caption("ML Signals with Price-Based Entry/Exit (displayed in PST)")
@@ -628,7 +663,6 @@ with st.sidebar:
     st.markdown("### ML Signals with Price-Based Entry/Exit (displayed in PST)")
 
     if not market_df.empty and "timestamp_pst" in market_df.columns:
-        # Filter out null/NaT values before finding min/max
         valid_market_times = market_df["timestamp_pst"].dropna()
         if not valid_market_times.empty:
             mk_min_pst, mk_max_pst = valid_market_times.min(), valid_market_times.max()
@@ -641,7 +675,6 @@ with st.sidebar:
             st.caption("📈 Market window (PST): No valid timestamps found")
 
     if not trades_df.empty and "timestamp_pst" in trades_df.columns:
-        # Filter out null/NaT values before finding min/max
         valid_trade_times = trades_df["timestamp_pst"].dropna()
         if not valid_trade_times.empty:
             tr_min_pst, tr_max_pst = valid_trade_times.min(), valid_trade_times.max()
@@ -688,7 +721,6 @@ with st.sidebar:
     DYNAMIC_ENTRY_TRY["timeout_minutes"] = int(ui_timeout_m)
     DYNAMIC_ENTRY_TRY["match_window_minutes"] = int(ui_match_m)
 
-    # What-if missed signals
     missed_buys_try = identify_missed_buys(market_df, trades_df, position_history, DYNAMIC_ENTRY_TRY)
     missed_sells_try = identify_missed_sells(market_df, trades_df, position_history, DYNAMIC_ENTRY_TRY)
 
@@ -898,7 +930,6 @@ with tab1:
                     st.plotly_chart(fig, use_container_width=True,
                         config={"displayModeBar": True, "modeBarButtonsToAdd": ["drawline","drawopenpath","drawclosedpath"], "scrollZoom": True})
 
-                    # Quick counts in view window
                     miss_buys_now = 0 if missed_buys_df.empty else len(missed_buys_df[missed_buys_df["asset"]==selected_asset])
                     miss_sells_now = 0 if missed_sells_df.empty else len(missed_sells_df[missed_sells_df["asset"]==selected_asset])
                     
@@ -924,8 +955,7 @@ with tab2:
         with c4: st.metric("Max Drawdown", f"${stats.get('max_drawdown', 0):.2f}")
 
         if not trades_with_pnl.empty:
-            plot_df = trades_with_pnl.copy()
-            plot_df = plot_df.sort_values("timestamp_pst")
+            plot_df = trades_with_pnl.copy().sort_values("timestamp_pst")
             plot_df["cumulative_pnl"] = plot_df["cumulative_pnl"].apply(float)
             fig_pnl = go.Figure()
             fig_pnl.add_trace(go.Scatter(x=plot_df["timestamp_pst"], y=plot_df["cumulative_pnl"], mode="lines", name="Cumulative P&L", line=dict(width=2)))
@@ -1010,15 +1040,12 @@ with tab4:
                 st.metric("Validity Rate", f"{vr:.1f}%")
             if not invalid.empty:
                 invalid_disp = invalid.copy()
-                # Create timestamp string column if timestamp_pst exists
                 if "timestamp_pst" in invalid_disp.columns:
                     invalid_disp["timestamp_pst_str"] = invalid_disp["timestamp_pst"].dt.strftime("%Y-%m-%d %H:%M:%S")
-                    # Use timestamp_pst_str for display, exclude original timestamp_pst
                     show_cols = [c for c in ["asset","price","p_up","p_down","confidence","reason","violation_reason"] if c in invalid_disp.columns]
                     display_cols = ["timestamp_pst_str"] + show_cols
                     sort_col = "timestamp_pst_str"
                 else:
-                    # Fallback if no timestamp_pst column
                     show_cols = [c for c in ["asset","price","p_up","p_down","confidence","reason","violation_reason"] if c in invalid_disp.columns]
                     display_cols = show_cols
                     sort_col = show_cols[0] if show_cols else None
@@ -1037,25 +1064,21 @@ with tab4:
 with tab5:
     st.markdown("### Position-Aware Missed Signals")
     
-    # Summary metrics
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.metric("Missed BUYs (add to position)", f"{len(missed_buys_df):,}")
     with col2:
         st.metric("Missed SELLs (in position)", f"{len(missed_sells_df):,}")
     with col3:
-        try_buys = len(missed_buys_try) if 'missed_buys_try' in locals() else 0
+        try_buys = len(missed_buys_df) if 'missed_buys_try' not in locals() else len(missed_buys_try)
         st.metric("Missed BUYs (what-if)", f"{try_buys:,}")
     with col4:
-        try_sells = len(missed_sells_try) if 'missed_sells_try' in locals() else 0
+        try_sells = len(missed_sells_df) if 'missed_sells_try' not in locals() else len(missed_sells_try)
         st.metric("Missed SELLs (what-if)", f"{try_sells:,}")
 
-    # Filters
     all_assets = set()
-    if not missed_buys_df.empty:
-        all_assets.update(missed_buys_df['asset'].unique())
-    if not missed_sells_df.empty:
-        all_assets.update(missed_sells_df['asset'].unique())
+    if not missed_buys_df.empty: all_assets.update(missed_buys_df['asset'].unique())
+    if not missed_sells_df.empty: all_assets.update(missed_sells_df['asset'].unique())
     
     if all_assets:
         assets_list = sorted(list(all_assets))
@@ -1063,7 +1086,6 @@ with tab5:
     else:
         sel_assets = []
 
-    # Display missed buys table
     if not missed_buys_df.empty:
         st.markdown("#### Missed BUY Signals (when in position - add to position)")
         filtered_buys = missed_buys_df[missed_buys_df['asset'].isin(sel_assets)] if sel_assets else missed_buys_df
@@ -1082,7 +1104,6 @@ with tab5:
             hide_index=True
         )
 
-    # Display missed sells table
     if not missed_sells_df.empty:
         st.markdown("#### Missed SELL Signals (when in position)")
         filtered_sells = missed_sells_df[missed_sells_df['asset'].isin(sel_assets)] if sel_assets else missed_sells_df
@@ -1101,7 +1122,6 @@ with tab5:
             hide_index=True
         )
 
-    # Download CSV
     if not missed_buys_df.empty or not missed_sells_df.empty:
         combined_missed = []
         if not missed_buys_df.empty:
@@ -1131,12 +1151,11 @@ with tab6:
     with colB: st.metric("Missed SELLs (in pos)", f"{len(missed_sells_df):,}")
     with colC: st.metric("Total Position-Aware", f"{len(missed_buys_df) + len(missed_sells_df):,}")
     
-    # Validity rate for OPENs
     action_col = "action" if "action" in trades_df.columns else ("unified_action" if "unified_action" in trades_df.columns else None)
     if not trades_df.empty and action_col:
         opens_mask = trades_df[action_col].astype(str).str.upper().isin(["OPEN","BUY"])
         opens = trades_df.loc[opens_mask].copy()
-        total_opens = len(opens); valid_opens = len(opens[opens["valid_at_open"]]) if "valid_at_open" in opens.columns else total_opens
+        total_opens = len(opens); valid_opens = len(opens["valid_at_open"]) if "valid_at_open" in opens.columns else total_opens
         vr = 0 if total_opens == 0 else (valid_opens / total_opens) * 100
     else:
         total_opens, valid_opens, vr = 0, 0, 0
@@ -1144,17 +1163,13 @@ with tab6:
 
     st.markdown("---")
     
-    # Per-asset breakdown for position-aware missed signals
     if not missed_buys_df.empty or not missed_sells_df.empty:
         st.markdown("#### Position-Aware Missed Signals by Asset")
-        
         buy_counts = missed_buys_df.groupby('asset').size().rename('missed_buys') if not missed_buys_df.empty else pd.Series(name='missed_buys', dtype=int)
         sell_counts = missed_sells_df.groupby('asset').size().rename('missed_sells') if not missed_sells_df.empty else pd.Series(name='missed_sells', dtype=int)
-        
         combined = pd.concat([buy_counts, sell_counts], axis=1).fillna(0).astype(int)
         combined['total_missed'] = combined['missed_buys'] + combined['missed_sells']
         combined = combined.sort_values('total_missed', ascending=False)
-        
         st.dataframe(
             combined.reset_index(),
             column_config={
@@ -1166,22 +1181,16 @@ with tab6:
             hide_index=True
         )
 
-    # What-if comparison if available
     if 'missed_buys_try' in locals() and 'missed_sells_try' in locals():
         st.markdown("---")
         st.markdown("#### Current vs What-If Comparison")
-        
         current_total = len(missed_buys_df) + len(missed_sells_df)
         try_total = len(missed_buys_try) + len(missed_sells_try)
         improvement = current_total - try_total
-        
         col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Current Total", f"{current_total:,}")
-        with col2:
-            st.metric("What-If Total", f"{try_total:,}")
-        with col3:
-            st.metric("Improvement", f"{improvement:+d}")
+        with col1: st.metric("Current Total", f"{current_total:,}")
+        with col2: st.metric("What-If Total", f"{try_total:,}")
+        with col3: st.metric("Improvement", f"{improvement:+d}")
 
     st.markdown("---")
     st.caption(
@@ -1253,8 +1262,3 @@ with st.sidebar:
             </div>
             """, unsafe_allow_html=True
         )
-
-
-
-
-
