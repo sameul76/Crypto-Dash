@@ -260,7 +260,6 @@ def load_data(trades_link: str, market_link: str):
             if col in trades.columns:
                 trades[col] = trades[col].apply(lambda x: Decimal(str(x)) if pd.notna(x) else Decimal(0))
 
-        # ensure datetime type if stringy
         if "timestamp_pst" in trades.columns and not pd.api.types.is_datetime64_any_dtype(trades["timestamp_pst"]):
             trades["timestamp_pst"] = pd.to_datetime(trades["timestamp_pst"], errors="coerce")
 
@@ -276,11 +275,9 @@ def load_data(trades_link: str, market_link: str):
             if col in market.columns:
                 market[col] = pd.to_numeric(market[col], errors="coerce")
 
-        # ✅ fixed syntax: ensure parse to datetime
         if "timestamp_pst" in market.columns and not pd.api.types.is_datetime64_any_dtype(market["timestamp_pst"]):
             market["timestamp_pst"] = pd.to_datetime(market["timestamp_pst"], errors="coerce")
 
-    # Normalize to UTC + PST tz-aware columns
     trades, market = normalize_all_times(trades, market)
     return trades, market
 
@@ -305,15 +302,12 @@ def _read_uploaded_market(uploaded) -> pd.DataFrame:
     if "asset" in df.columns:
         df["asset"] = df["asset"].apply(unify_symbol)
 
-    # normalize OHLC to numeric
     for c in ["open", "high", "low", "close"]:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
-    # normalize probabilities
     df = normalize_prob_columns(df)
 
-    # ensure timestamp_pst exists and is tz-aware PST, then make __x__ (tz-naive PST) for Plotly
     if "timestamp_pst" in df.columns:
         ts = pd.to_datetime(df["timestamp_pst"], errors="coerce")
         try:
@@ -333,7 +327,6 @@ def _read_uploaded_market(uploaded) -> pd.DataFrame:
         st.error("Uploaded file is missing a recognizable time column (timestamp or timestamp_pst).")
         return pd.DataFrame()
 
-    # tz-naive PST clone for Plotly only
     df["__x__"] = df["timestamp_pst"].dt.tz_localize(None)
     return df
 
@@ -760,84 +753,174 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
 ])
 
 # ----- TAB 1: Price & Trades -----
+with tab1:
+    if (market_df.empty) or ("asset" not in market_df.columns) or market_df["asset"].dropna().empty:
+        st.warning("Market data not available or missing assets.")
+    else:
+        assets = sorted(market_df["asset"].dropna().unique().tolist())
+        default_index = assets.index(DEFAULT_ASSET) if DEFAULT_ASSET in assets else 0
+        selected_asset = st.selectbox("Select Asset to View", assets, index=min(default_index, len(assets)-1), key="asset_select_main")
+        selected_asset = st.session_state.get("asset_select_main", selected_asset)
+
         asset_market_raw = market_df[market_df["asset"] == selected_asset].copy()
 
         # ---- normalize x + OHLC ----
-asset_market_raw = market_df[market_df["asset"] == selected_asset].copy()
+        if "__x__" not in asset_market_raw.columns and "timestamp_pst" in asset_market_raw.columns:
+            t = pd.to_datetime(asset_market_raw["timestamp_pst"], errors="coerce")
+            try:
+                if getattr(t.dt, "tz", None) is None:
+                    t = t.dt.tz_localize(TZ_PST)
+                else:
+                    t = t.dt.tz_convert(TZ_PST)
+            except Exception:
+                t = pd.to_datetime(asset_market_raw["timestamp_pst"], errors="coerce", utc=True).dt.tz_convert(TZ_PST)
+            asset_market_raw["__x__"] = t.dt.tz_localize(None)
 
-# ---- normalize x + OHLC ----
-if "__x__" not in asset_market_raw.columns and "timestamp_pst" in asset_market_raw.columns:
-    t = pd.to_datetime(asset_market_raw["timestamp_pst"], errors="coerce")
-    try:
-        if getattr(t.dt, "tz", None) is None:
-            t = t.dt.tz_localize(TZ_PST)
-        else:
-            t = t.dt.tz_convert(TZ_PST)
-    except Exception:
-        t = pd.to_datetime(asset_market_raw["timestamp_pst"], errors="coerce", utc=True).dt.tz_convert(TZ_PST)
-    asset_market_raw["__x__"] = t.dt.tz_localize(None)
+        for c in ["open", "high", "low", "close"]:
+            if c in asset_market_raw.columns:
+                asset_market_raw[c] = pd.to_numeric(asset_market_raw[c], errors="coerce")
 
-# force numeric OHLC so Plotly doesn't drop the candle trace
-for c in ["open", "high", "low", "close"]:
-    if c in asset_market_raw.columns:
-        asset_market_raw[c] = pd.to_numeric(asset_market_raw[c], errors="coerce")
+        asset_market_raw = asset_market_raw.sort_values("__x__")
 
-asset_market_raw = asset_market_raw.sort_values("__x__")
+        need_cols = ["__x__", "open", "high", "low", "close"]
+        present_cols = [col for col in need_cols if col in asset_market_raw.columns]
+        asset_candles = asset_market_raw.dropna(subset=present_cols).copy()
+        if not asset_candles.empty:
+            asset_candles = asset_candles.drop_duplicates(subset="__x__", keep="last")
 
-# keep rows where ALL five fields exist; drop duplicate x keeping the last
-need_cols = ["__x__", "open", "high", "low", "close"]
-present_cols = [col for col in need_cols if col in asset_market_raw.columns]
-asset_candles = asset_market_raw.dropna(subset=present_cols).copy()
-if not asset_candles.empty:
-    asset_candles = asset_candles.drop_duplicates(subset="__x__", keep="last")
+        asset_incomplete = asset_market_raw.loc[~asset_market_raw.index.isin(asset_candles.index)].copy()
 
-# rows that still lack complete OHLC (we’ll line-plot close so newest data is still visible)
-asset_incomplete = asset_market_raw.loc[~asset_market_raw.index.isin(asset_candles.index)].copy()
+        # ---- SYNTHETIC CANDLES fallback if no real OHLC rows ----
+        if asset_candles.empty and {"__x__", "close"}.issubset(asset_market_raw.columns):
+            tmp = asset_market_raw.dropna(subset=["__x__", "close"]).copy()
+            if not tmp.empty:
+                eps = np.maximum(tmp["close"].abs() * 1e-4, 1e-9)  # tiny height
+                tmp["open"] = tmp["close"]
+                tmp["high"] = tmp["close"] + eps
+                tmp["low"]  = tmp["close"] - eps
+                asset_candles = tmp[["__x__", "open", "high", "low", "close"]].drop_duplicates(subset="__x__", keep="last")
 
-# ---- SYNTHETIC CANDLES (optional fallback) ----
-# If there are NO true candles but we have close + __x__, create tiny-range candles so the series renders.
-if asset_candles.empty and {"__x__", "close"}.issubset(asset_market_raw.columns):
-    tmp = asset_market_raw.dropna(subset=["__x__", "close"]).copy()
-    if not tmp.empty:
-        # choose a small epsilon based on price scale (avoid zero-height candles)
-        eps = np.maximum(tmp["close"].abs() * 1e-4, 1e-9)  # 1bp or 1e-9 min
-        tmp["open"] = tmp["close"]
-        tmp["high"] = tmp["close"] + eps
-        tmp["low"]  = tmp["close"] - eps
-        asset_candles = tmp[["__x__", "open", "high", "low", "close"]].drop_duplicates(subset="__x__", keep="last")
+        # ---- metric ----
+        last_close = asset_market_raw["close"].dropna().iloc[-1] if asset_market_raw["close"].notna().any() else np.nan
+        if pd.notna(last_close):
+            pf = ",.8f" if last_close < 0.001 else ",.6f" if last_close < 1 else ",.4f"
+            st.metric(f"Last Price for {selected_asset}", f"${last_close:{pf}}")
 
-# ---- metric ----
-last_close = asset_market_raw["close"].dropna().iloc[-1] if asset_market_raw["close"].notna().any() else np.nan
-if pd.notna(last_close):
-    pf = ",.8f" if last_close < 0.001 else ",.6f" if last_close < 1 else ",.4f"
-    st.metric(f"Last Price for {selected_asset}", f"${last_close:{pf}}")
+        fig = go.Figure()
 
-fig = go.Figure()
+        # 1) Candlesticks (real or synthetic)
+        if not asset_candles.empty:
+            fig.add_trace(go.Candlestick(
+                x=asset_candles["__x__"],
+                open=asset_candles["open"], high=asset_candles["high"],
+                low=asset_candles["low"], close=asset_candles["close"],
+                name=f"{selected_asset} (candles)",
+                increasing_line_color="#26a69a", decreasing_line_color="#ef5350",
+                increasing_fillcolor="rgba(38,166,154,0.5)", decreasing_fillcolor="rgba(239,83,80,0.5)",
+                line=dict(width=1)
+            ))
 
-# 1) Candlesticks (real + synthetic if needed)
-if not asset_candles.empty:
-    fig.add_trace(go.Candlestick(
-        x=asset_candles["__x__"],
-        open=asset_candles["open"], high=asset_candles["high"],
-        low=asset_candles["low"], close=asset_candles["close"],
-        name=f"{selected_asset} (candles)",
-        increasing_line_color="#26a69a", decreasing_line_color="#ef5350",
-        increasing_fillcolor="rgba(38,166,154,0.5)", decreasing_fillcolor="rgba(239,83,80,0.5)",
-        line=dict(width=1)
-    ))
+        # 2) Fallback line for truly incomplete rows
+        if not asset_incomplete.empty and asset_incomplete[["__x__", "close"]].dropna().shape[0] > 0:
+            tmp = asset_incomplete.dropna(subset=["__x__", "close"]).copy()
+            tmp = tmp.drop_duplicates(subset="__x__", keep="last")
+            fig.add_trace(go.Scatter(
+                x=tmp["__x__"], y=tmp["close"],
+                mode="lines+markers", name="Price (incomplete OHLC)",
+                line=dict(width=1, dash="dot"),
+                hovertemplate="<b>Price (incomplete OHLC)</b><br>%{x|%Y-%m-%d %H:%M}<br>Close: $%{y:.8f}<extra></extra>",
+            ))
 
-# 2) Fallback line for truly incomplete rows (keeps newest visible)
-if not asset_incomplete.empty and asset_incomplete[["__x__", "close"]].dropna().shape[0] > 0:
-    tmp = asset_incomplete.dropna(subset=["__x__", "close"]).copy()
-    tmp = tmp.drop_duplicates(subset="__x__", keep="last")
-    fig.add_trace(go.Scatter(
-        x=tmp["__x__"], y=tmp["close"],
-        mode="lines+markers", name="Price (incomplete OHLC)",
-        line=dict(width=1, dash="dot"),
-        hovertemplate="<b>Price (incomplete OHLC)</b><br>%{x|%Y-%m-%d %H:%M}<br>Close: $%{y:.8f}<extra></extra>",
-    ))
+        # 3) ML signals
+        if {"p_up", "p_down", "close", "__x__"}.issubset(asset_market_raw.columns):
+            sig = asset_market_raw.dropna(subset=["__x__","p_up","p_down","close"]).copy()
+            if not sig.empty:
+                sig["p_up"] = pd.to_numeric(sig["p_up"], errors="coerce")
+                sig["p_down"] = pd.to_numeric(sig["p_down"], errors="coerce")
+                sig = sig.dropna(subset=["p_up","p_down"])
+                sig["confidence"] = (sig["p_up"] - sig["p_down"]).abs()
+                sizes = (sig["confidence"] * 100.0) / 5.0 + 3.0
+                colors = np.where(sig["p_down"] > sig["p_up"], "#ff6b6b", "#51cf66")
+                fig.add_trace(go.Scatter(
+                    x=sig["__x__"], y=sig["close"], mode="markers", name="ML Signals",
+                    marker=dict(size=sizes, color=colors, opacity=0.7, line=dict(width=1, color="white")),
+                    customdata=list(zip(sig["p_up"], sig["p_down"], sig["confidence"])),
+                    hovertemplate="<b>ML Signal</b><br>%{x|%Y-%m-%d %H:%M}<br>Close: $%{y:.6f}"
+                                  "<br>P(Up): %{customdata[0]:.3f}"
+                                  "<br>P(Down): %{customdata[1]:.3f}"
+                                  "<br>Confidence: %{customdata[2]:.3f}<extra></extra>",
+                ))
 
+        # 4) Trade markers (convert to same tz-naive PST x)
+        marker_y = None
+        yref = asset_candles["low"] if not asset_candles.empty else asset_market_raw["close"].dropna()
+        if not yref.empty:
+            ymin, ymax = float(yref.min()), float(yref.max())
+            marker_y = ymin - max(1e-12, (ymax - ymin)) * 0.02
 
+        if marker_y is not None and (not trades_df.empty) and ("timestamp_pst" in trades_df.columns):
+            tdf = trades_df[trades_df["asset"] == selected_asset].copy()
+            if not tdf.empty:
+                tx = pd.to_datetime(tdf["timestamp_pst"], errors="coerce")
+                try:
+                    if getattr(tx.dt, "tz", None) is None:
+                        tx = tx.dt.tz_localize(TZ_PST)
+                    else:
+                        tx = tx.dt.tz_convert(TZ_PST)
+                except Exception:
+                    tx = pd.to_datetime(tdf["timestamp_pst"], errors="coerce", utc=True).dt.tz_convert(TZ_PST)
+                tdf["__x__"] = tx.dt.tz_localize(None)
+
+                buys = tdf[tdf["unified_action"].str.lower().isin(["buy","open"])]
+                sells = tdf[tdf["unified_action"].str.lower().isin(["sell","close"])]
+
+                if not buys.empty:
+                    fig.add_trace(go.Scatter(
+                        x=buys["__x__"], y=[marker_y]*len(buys), mode="markers", name="BUY",
+                        marker=dict(symbol="triangle-up", size=14, color="#4caf50", line=dict(width=1, color="white")),
+                        hovertemplate="<b>BUY</b><br>%{x|%H:%M:%S}<extra></extra>",
+                    ))
+                if not sells.empty:
+                    fig.add_trace(go.Scatter(
+                        x=sells["__x__"], y=[marker_y]*len(sells), mode="markers", name="SELL",
+                        marker=dict(symbol="triangle-down", size=14, color="#f44336", line=dict(width=1, color="white")),
+                        hovertemplate="<b>SELL</b><br>%{x|%H:%M:%S}<extra></extra>",
+                    ))
+
+        # 5) Layout + rangeslider
+        fig.update_layout(
+            title=f"{selected_asset} — Full History",
+            template="plotly_dark" if st.session_state.theme == "dark" else "plotly_white",
+            xaxis=dict(
+                title="Time (PST)",
+                type="date",
+                rangeslider=dict(visible=True),
+                rangeselector=dict(
+                    buttons=[
+                        dict(count=4, label="4h", step="hour", stepmode="backward"),
+                        dict(count=12, label="12h", step="hour", stepmode="backward"),
+                        dict(count=1, label="1d", step="day", stepmode="backward"),
+                        dict(count=3, label="3d", step="day", stepmode="backward"),
+                        dict(count=7, label="7d", step="day", stepmode="backward"),
+                        dict(step="all", label="All"),
+                    ]
+                ),
+            ),
+            yaxis=dict(title="Price (USD)"),
+            hovermode="x unified",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+            height=780, margin=dict(l=60, r=20, t=80, b=80),
+            plot_bgcolor="rgba(14,17,23,1)" if st.session_state.theme == "dark" else "rgba(250,250,250,0.8)",
+            paper_bgcolor="rgba(14,17,23,1)" if st.session_state.theme == "dark" else "rgba(255,255,255,1)",
+            font_color="#FAFAFA" if st.session_state.theme == "dark" else "#262626",
+        )
+
+        st.plotly_chart(fig, use_container_width=True,
+            config={"displayModeBar": True, "modeBarButtonsToAdd": ["drawline","drawopenpath","drawclosedpath"], "scrollZoom": True})
+
+        with st.expander("📎 Latest rows (quick check)"):
+            tail_cols = [c for c in ["__x__","timestamp_pst","open","high","low","close","p_up","p_down"] if c in asset_market_raw.columns]
+            st.dataframe(asset_market_raw[tail_cols].tail(15), use_container_width=True)
 
 # ----- TAB 2: P&L Analysis -----
 with tab2:
@@ -1163,5 +1246,3 @@ with st.sidebar:
             </div>
             """, unsafe_allow_html=True
         )
-
-
