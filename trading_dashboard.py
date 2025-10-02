@@ -752,138 +752,182 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
 ])
 
 # ----- TAB 1: Price & Trades -----
-with tab1:
-    if market_df.empty or "asset" not in market_df.columns or "timestamp_pst" not in market_df.columns:
-        st.warning("Market data not available or missing timestamp_pst column.")
+# FULL history for the asset (no artificial range filter)
+asset_market_raw = market_df[market_df["asset"] == selected_asset].copy()
+
+# Make sure times & numbers are clean
+needed = ["timestamp_pst", "open", "high", "low", "close"]
+for col in ["open","high","low","close"]:
+    if col in asset_market_raw.columns:
+        asset_market_raw[col] = pd.to_numeric(asset_market_raw[col], errors="coerce")
+
+# If timestamp_pst is missing or not datetime, coerce (keeps tz when present)
+if "timestamp_pst" not in asset_market_raw.columns or not pd.api.types.is_datetime64_any_dtype(asset_market_raw["timestamp_pst"]):
+    # Fallback if file only has UTC timestamp
+    if "timestamp" in asset_market_raw.columns:
+        ts = pd.to_datetime(asset_market_raw["timestamp"], errors="coerce", utc=True)
+        asset_market_raw["timestamp_pst"] = ts.dt.tz_convert("America/Los_Angeles")
     else:
-        assets = sorted(market_df["asset"].dropna().unique().tolist())
-        default_index = assets.index(DEFAULT_ASSET) if DEFAULT_ASSET in assets else 0
+        asset_market_raw["timestamp_pst"] = pd.NaT
 
-        selected_asset = st.selectbox("Select Asset to View", assets, index=default_index, key="asset_select_main")
+# Sort by PST time
+asset_market_raw = asset_market_raw.sort_values("timestamp_pst")
 
-        # FULL history for the asset (no artificial range filter)
-        asset_market = (
-            market_df[market_df["asset"] == selected_asset]
-            .dropna(subset=["open", "high", "low", "close", "timestamp_pst"])
-            .sort_values("timestamp_pst")
-            .copy()
-        )
+# Split rows with complete OHLC vs incomplete (candlestick needs all 4)
+ohlc_cols = ["open","high","low","close"]
+complete_mask = asset_market_raw[ohlc_cols].notna().all(axis=1)
+asset_candles = asset_market_raw.loc[complete_mask].copy()
+asset_incomplete = asset_market_raw.loc[~complete_mask].copy()
 
-        if asset_market.empty:
-            st.warning(f"No market data found for {selected_asset}.")
-        else:
-            last_price = asset_market["close"].iloc[-1]
-            pf = ",.8f" if last_price < 0.001 else ",.6f" if last_price < 1 else ",.4f"
+if asset_market_raw.empty or asset_market_raw["timestamp_pst"].dropna().empty:
+    st.warning(f"No usable market data (timestamps) for {selected_asset}.")
+else:
+    # Always show a recent price, even if last candle is incomplete
+    last_close = asset_market_raw["close"].dropna().iloc[-1] if asset_market_raw["close"].notna().any() else float("nan")
+    pf = ",.8f" if (pd.notna(last_close) and last_close < 0.001) else ",.6f" if (pd.notna(last_close) and last_close < 1) else ",.4f"
+    if pd.notna(last_close):
+        st.metric(f"Last Price for {selected_asset}", f"${last_close:{pf}}")
 
-            fig = go.Figure()
-            fig.add_trace(go.Candlestick(
-                x=asset_market["timestamp_pst"],
-                open=asset_market["open"],
-                high=asset_market["high"],
-                low=asset_market["low"],
-                close=asset_market["close"],
-                name=selected_asset,
-                increasing_line_color="#26a69a", decreasing_line_color="#ef5350",
-                increasing_fillcolor="rgba(38,166,154,0.5)", decreasing_fillcolor="rgba(239,83,80,0.5)",
-                line=dict(width=1)
+    fig = go.Figure()
+
+    # 1) Candles for complete rows
+    if not asset_candles.empty:
+        fig.add_trace(go.Candlestick(
+            x=asset_candles["timestamp_pst"],
+            open=asset_candles["open"],
+            high=asset_candles["high"],
+            low=asset_candles["low"],
+            close=asset_candles["close"],
+            name=f"{selected_asset} (candles)",
+            increasing_line_color="#26a69a", decreasing_line_color="#ef5350",
+            increasing_fillcolor="rgba(38,166,154,0.5)", decreasing_fillcolor="rgba(239,83,80,0.5)",
+            line=dict(width=1)
+        ))
+
+    # 2) Fallback line for rows with incomplete OHLC (so newest bars are still visible)
+    if not asset_incomplete.empty and asset_incomplete["close"].notna().any():
+        asset_incomplete = asset_incomplete.dropna(subset=["timestamp_pst", "close"])
+        if not asset_incomplete.empty:
+            fig.add_trace(go.Scatter(
+                x=asset_incomplete["timestamp_pst"],
+                y=asset_incomplete["close"],
+                mode="lines+markers",
+                name="Price (incomplete OHLC)",
+                line=dict(width=1, dash="dot"),
+                hovertemplate="<b>Price (incomplete OHLC)</b><br>%{x|%Y-%m-%d %H:%M}<br>Close: $%{y:.8f}<extra></extra>",
+            ))
+            st.info("Newest rows have missing O/H/L/C; showing a dashed close-price line for those rows.")
+
+    # 3) ML signals overlay (on whatever rows exist)
+    if {"p_up", "p_down"}.issubset(asset_market_raw.columns):
+        sig = asset_market_raw.dropna(subset=["p_up", "p_down", "timestamp_pst", "close"]).copy()
+        if not sig.empty:
+            sig["confidence"] = (pd.to_numeric(sig["p_up"], errors="coerce") - pd.to_numeric(sig["p_down"], errors="coerce")).abs()
+            sizes = (sig["confidence"] * 100.0) / 5.0 + 3.0
+            colors = np.where(sig["p_down"] > sig["p_up"], "#ff6b6b", "#51cf66")
+            fig.add_trace(go.Scatter(
+                x=sig["timestamp_pst"], y=sig["close"], mode="markers", name="ML Signals",
+                marker=dict(size=sizes, color=colors, opacity=0.7, line=dict(width=1, color="white")),
+                customdata=list(zip(sig["p_up"], sig["p_down"], sig["confidence"])),
+                hovertemplate="<b>ML Signal</b><br>%{x|%Y-%m-%d %H:%M}<br>Close: $%{y:.6f}"
+                              "<br>P(Up): %{customdata[0]:.3f}"
+                              "<br>P(Down): %{customdata[1]:.3f}"
+                              "<br>Confidence: %{customdata[2]:.3f}<extra></extra>",
             ))
 
-            # ML signals overlay
-            if {"p_up", "p_down"}.issubset(asset_market.columns):
-                sig = asset_market.dropna(subset=["p_up", "p_down"]).copy()
-                if not sig.empty:
-                    sig["confidence"] = (sig["p_up"] - sig["p_down"]).abs()
-                    sizes = (sig["confidence"] * 100.0) / 5.0 + 3.0
-                    colors = np.where(sig["p_down"] > sig["p_up"], "#ff6b6b", "#51cf66")
-                    fig.add_trace(go.Scatter(
-                        x=sig["timestamp_pst"], y=sig["close"], mode="markers", name="ML Signals",
-                        marker=dict(size=sizes, color=colors, opacity=0.7, line=dict(width=1, color="white")),
-                        customdata=list(zip(sig["p_up"], sig["p_down"], sig["confidence"])),
-                        hovertemplate="<b>ML Signal</b><br>Time: %{x|%Y-%m-%d %H:%M}<br>"
-                                      "Price: $%{y:.6f}<br>P(Up): %{customdata[0]:.3f}<br>"
-                                      "P(Down): %{customdata[1]:.3f}<br>"
-                                      "Confidence: %{customdata[2]:.3f}<extra></extra>",
-                    ))
+    # 4) Trade markers across full span
+    marker_y = None
+    if not asset_candles.empty:
+        price_range = asset_candles["high"].max() - asset_candles["low"].min()
+        marker_y = asset_candles["low"].min() - price_range * 0.02
+    elif asset_market_raw["close"].notna().any():
+        # If we only have the line
+        cmin, cmax = asset_market_raw["close"].min(), asset_market_raw["close"].max()
+        marker_y = cmin - max(1e-9, (cmax - cmin)) * 0.02
 
-            # Buy/Sell markers from trades (full span)
-            if not trades_df.empty and "timestamp_pst" in trades_df.columns:
-                asset_trades = trades_df[trades_df["asset"] == selected_asset].copy()
-                if not asset_trades.empty:
-                    marker_y = asset_market["low"].min() - (asset_market["high"].max() - asset_market["low"].min()) * 0.02
-                    buys = asset_trades[asset_trades["unified_action"].str.lower().isin(["buy","open"])].copy()
-                    if not buys.empty:
-                        if "valid_at_open" not in buys.columns: buys["valid_at_open"] = True
-                        if "violation_reason" not in buys.columns: buys["violation_reason"] = ""
-                        if "revalidated_hint" not in buys.columns: buys["revalidated_hint"] = False
-                        buy_prices = buys["price"].apply(float)
-                        buy_reasons = buys.get("reason", pd.Series([""] * len(buys))).fillna("")
-                        buy_colors = np.where(buys["valid_at_open"].fillna(True), "#4caf50", "#f59e0b")
-                        buy_valid_str = buys["valid_at_open"].map(lambda x: "Yes" if x else "No")
-                        buy_reval_str = buys["revalidated_hint"].map(lambda x: "Re-validated bounce: Yes" if x else "")
-                        buy_viol_str = buys["violation_reason"].fillna("")
-                        fig.add_trace(go.Scatter(
-                            x=buys["timestamp_pst"], y=[marker_y] * len(buys), mode="markers", name="BUY",
-                            marker=dict(symbol="triangle-up", size=14, color=buy_colors, line=dict(width=1, color="white")),
-                            customdata=np.stack((buy_prices, buy_reasons, buy_valid_str, buy_reval_str, buy_viol_str), axis=-1),
-                            hovertemplate="<b>BUY</b> @ $%{customdata[0]:.8f}<br>%{x|%H:%M:%S}"
-                                          "<br>Reason: %{customdata[1]}<br>Valid at OPEN: %{customdata[2]}"
-                                          "<br>%{customdata[3]}<br>%{customdata[4]}<extra></extra>",
-                        ))
+    if (not trades_df.empty) and ("timestamp_pst" in trades_df.columns) and marker_y is not None:
+        asset_trades = trades_df[trades_df["asset"] == selected_asset].copy()
+        if not asset_trades.empty:
+            buys = asset_trades[asset_trades["unified_action"].str.lower().isin(["buy","open"])].copy()
+            if not buys.empty:
+                if "valid_at_open" not in buys.columns: buys["valid_at_open"] = True
+                if "violation_reason" not in buys.columns: buys["violation_reason"] = ""
+                if "revalidated_hint" not in buys.columns: buys["revalidated_hint"] = False
+                buy_prices = buys["price"].apply(float)
+                buy_reasons = buys.get("reason", pd.Series([""] * len(buys))).fillna("")
+                buy_colors = np.where(buys["valid_at_open"].fillna(True), "#4caf50", "#f59e0b")
+                buy_valid_str = buys["valid_at_open"].map(lambda x: "Yes" if x else "No")
+                buy_reval_str = buys["revalidated_hint"].map(lambda x: "Re-validated bounce: Yes" if x else "")
+                buy_viol_str = buys["violation_reason"].fillna("")
+                fig.add_trace(go.Scatter(
+                    x=buys["timestamp_pst"], y=[marker_y] * len(buys), mode="markers", name="BUY",
+                    marker=dict(symbol="triangle-up", size=14, color=buy_colors, line=dict(width=1, color="white")),
+                    customdata=np.stack((buy_prices, buy_reasons, buy_valid_str, buy_reval_str, buy_viol_str), axis=-1),
+                    hovertemplate="<b>BUY</b> @ $%{customdata[0]:.8f}<br>%{x|%H:%M:%S}"
+                                  "<br>Reason: %{customdata[1]}<br>Valid at OPEN: %{customdata[2]}"
+                                  "<br>%{customdata[3]}<br>%{customdata[4]}<extra></extra>",
+                ))
 
-                    sells = asset_trades[asset_trades["unified_action"].str.lower().isin(["sell","close"])].copy()
-                    if not sells.empty:
-                        sell_prices = sells["price"].apply(float)
-                        sell_reasons = sells.get("reason", pd.Series([""] * len(sells))).fillna("")
-                        fig.add_trace(go.Scatter(
-                            x=sells["timestamp_pst"], y=[marker_y] * len(sells), mode="markers", name="SELL",
-                            marker=dict(symbol="triangle-down", size=14, color="#f44336", line=dict(width=1, color="white")),
-                            customdata=np.stack((sell_prices, sell_reasons), axis=-1),
-                            hovertemplate="<b>SELL</b> @ $%{customdata[0]:.8f}<br>%{x|%H:%M:%S}"
-                                          "<br>Reason: %{customdata[1]}<extra></extra>",
-                        ))
+            sells = asset_trades[asset_trades["unified_action"].str.lower().isin(["sell","close"])].copy()
+            if not sells.empty:
+                sell_prices = sells["price"].apply(float)
+                sell_reasons = sells.get("reason", pd.Series([""] * len(sells))).fillna("")
+                fig.add_trace(go.Scatter(
+                    x=sells["timestamp_pst"], y=[marker_y] * len(sells), mode="markers", name="SELL",
+                    marker=dict(symbol="triangle-down", size=14, color="#f44336", line=dict(width=1, color="white")),
+                    customdata=np.stack((sell_prices, sell_reasons), axis=-1),
+                    hovertemplate="<b>SELL</b> @ $%{customdata[0]:.8f}<br>%{x|%H:%M:%S}"
+                                  "<br>Reason: %{customdata[1]}<extra></extra>",
+                ))
 
-            # Layout with rangeslider & rangeselector
-            tick_format = "%m/%d %H:%M"
-            fig.update_layout(
-                title=f"{selected_asset} — Full History (scroll with slider)",
-                template="plotly_dark" if st.session_state.theme == "dark" else "plotly_white",
-                xaxis_rangeslider_visible=True,
-                xaxis=dict(
-                    title="Time (PST)",
-                    type="date",
-                    tickformat=tick_format,
-                    showgrid=True,
-                    gridcolor="rgba(59,66,82,0.3)" if st.session_state.theme == "dark" else "rgba(128,128,128,0.1)",
-                    rangeselector=dict(
-                        buttons=[
-                            dict(count=4, label="4h", step="hour", stepmode="backward"),
-                            dict(count=12, label="12h", step="hour", stepmode="backward"),
-                            dict(count=1, label="1d", step="day", stepmode="backward"),
-                            dict(count=3, label="3d", step="day", stepmode="backward"),
-                            dict(count=7, label="7d", step="day", stepmode="backward"),
-                            dict(step="all", label="All")
-                        ]
-                    )
-                ),
-                yaxis=dict(
-                    title="Price (USD)",
-                    tickformat=".8f" if last_price < 0.001 else ".6f" if last_price < 1 else ".4f",
-                    showgrid=True,
-                    gridcolor="rgba(59,66,82,0.3)" if st.session_state.theme == "dark" else "rgba(128,128,128,0.1)"
-                ),
-                hovermode="x unified",
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
-                height=780, margin=dict(l=60, r=20, t=80, b=80),
-                plot_bgcolor="rgba(14,17,23,1)" if st.session_state.theme == "dark" else "rgba(250,250,250,0.8)",
-                paper_bgcolor="rgba(14,17,23,1)" if st.session_state.theme == "dark" else "rgba(255,255,255,1)",
-                font_color="#FAFAFA" if st.session_state.theme == "dark" else "#262626",
-            )
+    # 5) Layout with rangeslider/rangeselector (full history shown; scroll to latest)
+    fig.update_layout(
+        title=f"{selected_asset} — Full History (candles + fallback line)",
+        template="plotly_dark" if st.session_state.theme == "dark" else "plotly_white",
+        xaxis=dict(
+            title="Time (PST)",
+            type="date",
+            tickformat="%m/%d %H:%M",
+            showgrid=True,
+            gridcolor="rgba(59,66,82,0.3)" if st.session_state.theme == "dark" else "rgba(128,128,128,0.1)",
+            rangeslider=dict(visible=True),
+            rangeselector=dict(
+                buttons=[
+                    dict(count=4, label="4h", step="hour", stepmode="backward"),
+                    dict(count=12, label="12h", step="hour", stepmode="backward"),
+                    dict(count=1, label="1d", step="day", stepmode="backward"),
+                    dict(count=3, label="3d", step="day", stepmode="backward"),
+                    dict(count=7, label="7d", step="day", stepmode="backward"),
+                    dict(step="all", label="All"),
+                ]
+            ),
+            autorange=True,
+        ),
+        yaxis=dict(
+            title="Price (USD)",
+            tickformat=".8f" if (pd.notna(last_close) and last_close < 0.001) else ".6f" if (pd.notna(last_close) and last_close < 1) else ".4f",
+            showgrid=True,
+            gridcolor="rgba(59,66,82,0.3)" if st.session_state.theme == "dark" else "rgba(128,128,128,0.1)"
+        ),
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+        height=780, margin=dict(l=60, r=20, t=80, b=80),
+        plot_bgcolor="rgba(14,17,23,1)" if st.session_state.theme == "dark" else "rgba(250,250,250,0.8)",
+        paper_bgcolor="rgba(14,17,23,1)" if st.session_state.theme == "dark" else "rgba(255,255,255,1)",
+        font_color="#FAFAFA" if st.session_state.theme == "dark" else "#262626",
+    )
 
-            st.plotly_chart(
-                fig,
-                use_container_width=True,
-                config={"displayModeBar": True, "modeBarButtonsToAdd": ["drawline","drawopenpath","drawclosedpath"], "scrollZoom": True}
-            )
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+        config={"displayModeBar": True, "modeBarButtonsToAdd": ["drawline","drawopenpath","drawclosedpath"], "scrollZoom": True}
+    )
+
+    # Quick tail peek so we can visually confirm latest rows & completeness
+    with st.expander("📎 Latest rows (quick check)"):
+        tail_cols = [c for c in ["timestamp_pst","open","high","low","close","p_up","p_down"] if c in asset_market_raw.columns]
+        st.dataframe(asset_market_raw[tail_cols].tail(15), use_container_width=True)
+
 
 # ----- TAB 2: P&L Analysis -----
 with tab2:
@@ -1247,4 +1291,5 @@ with st.sidebar:
             </div>
             """, unsafe_allow_html=True
         )
+
 
