@@ -371,7 +371,6 @@ def summarize_realized_pnl(trades_with_pnl: pd.DataFrame):
 
     df = trades_with_pnl.copy()
     df["pnl_float"] = df["pnl"].apply(lambda x: float(x) if pd.notna(x) else 0.0)
-
     per_asset = (
         df.groupby("asset")["pnl_float"]
           .sum()
@@ -379,7 +378,6 @@ def summarize_realized_pnl(trades_with_pnl: pd.DataFrame):
           .rename(columns={"asset": "Asset", "pnl_float": "Realized P&L ($)"})
           .sort_values("Realized P&L ($)", ascending=False)
     )
-
     overall = float(per_asset["Realized P&L ($)"].sum()) if not per_asset.empty else 0.0
     return overall, per_asset
 
@@ -474,7 +472,6 @@ def calculate_open_positions(trades_df: pd.DataFrame, market_df: pd.DataFrame) -
                 })
     return pd.DataFrame(open_positions)
 
-# Position tracking function (uses timestamp_pst for chronology; UTC is used in get_position_at_time)
 def track_positions_over_time(trades_df: pd.DataFrame) -> pd.DataFrame:
     if trades_df.empty or "timestamp_pst" not in trades_df.columns:
         return pd.DataFrame(columns=['timestamp_pst', 'asset', 'position_qty'])
@@ -525,10 +522,8 @@ def identify_missed_buys(market_df: pd.DataFrame, trades_df: pd.DataFrame, posit
 
             signal_time = row['timestamp_pst']
             position_qty = get_position_at_time(position_history, asset, signal_time)
-            
-            # Skip if we are already in a position at this time
             if position_qty > 0:
-                continue
+                continue  # already in position
             
             executed = False
             if not executed_buys.empty:
@@ -573,8 +568,8 @@ def identify_missed_sells(market_df: pd.DataFrame, trades_df: pd.DataFrame, posi
             is_sell_signal = (pdn > pu) and (pdn >= th["sell_threshold"]) and (conf >= th["min_confidence"])
             if not is_sell_signal:
                 continue
-            signal_time = row['timestamp_pst']  # PST datetime
-            position_qty = get_position_at_time(position_history, asset, signal_time)  # UTC-safe inside
+            signal_time = row['timestamp_pst']
+            position_qty = get_position_at_time(position_history, asset, signal_time)
             if position_qty <= 0:
                 continue
             executed = False
@@ -638,7 +633,7 @@ DYNAMIC_ENTRY_UI = {
     "match_window_minutes": 5,
 }
 
-# ========= Load + simple cache age =========
+# ========= Load + refresh =========
 st.markdown("## Crypto Trading Strategy")
 st.caption("ML Signals with Price-Based Entry/Exit (displayed in PST)")
 apply_theme()
@@ -702,10 +697,10 @@ with st.sidebar:
     if not market_df.empty and "asset" in market_df.columns:
         st.markdown(f"**Assets:** {market_df['asset'].nunique():,}")
 
-    # Optional quick overall P&L badge
+    # Optional: quick overall P&L badge
     if not trades_df.empty:
-        _, _with_pnl, _ = calculate_pnl_and_metrics(trades_df)
-        _overall, _per_asset = summarize_realized_pnl(_with_pnl)
+        _, t_with_pnl, _stats = calculate_pnl_and_metrics(trades_df)
+        _overall, _ = summarize_realized_pnl(t_with_pnl)
         st.markdown(
             f"""
             <div style='text-align: center; padding: 0.5rem; background-color: rgba(128,128,128,0.1); border-radius: 0.25rem; margin-top: 0.5rem;'>
@@ -718,28 +713,8 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("**🔧 Tuning (what-if)**")
-    ui_bounce = st.number_input(
-        "Bounce (pct)",
-        min_value=0.0005,
-        max_value=0.01,
-        value=DYNAMIC_ENTRY_UI["confirmation_bounce_pct"],
-        step=0.0001,
-        format="%.4f",
-    )
-    ui_timeout_m = st.number_input(
-        "Timeout (min)",
-        min_value=7,
-        max_value=180,
-        value=DYNAMIC_ENTRY_UI["timeout_minutes"],
-        step=1,
-    )
-    ui_match_m = st.number_input(
-        "Match window (±min)", 1, 20, DYNAMIC_ENTRY_UI["match_window_minutes"], 1
-    )
-
+    ui_match_m = st.number_input("Match window (±min)", 1, 20, DYNAMIC_ENTRY_UI["match_window_minutes"], 1)
     DYNAMIC_ENTRY_TRY = dict(DYNAMIC_ENTRY_UI)
-    DYNAMIC_ENTRY_TRY["confirmation_bounce_pct"] = float(ui_bounce)
-    DYNAMIC_ENTRY_TRY["timeout_minutes"] = int(ui_timeout_m)
     DYNAMIC_ENTRY_TRY["match_window_minutes"] = int(ui_match_m)
 
     missed_buys_try = identify_missed_buys(market_df, trades_df, position_history, DYNAMIC_ENTRY_TRY)
@@ -784,189 +759,131 @@ with tab1:
         assets = sorted(market_df["asset"].dropna().unique().tolist())
         default_index = assets.index(DEFAULT_ASSET) if DEFAULT_ASSET in assets else 0
 
-        ui1, ui2 = st.columns([3, 2])
-        with ui1:
-            selected_asset = st.selectbox("Select Asset to View", assets, index=default_index, key="asset_select_main")
-        with ui2:
-            # This only sets the initial view window; we still plot ALL data.
-            range_choice = st.selectbox(
-                "Initial View",
-                ["4 hours","12 hours","1 day","3 days","7 days","30 days","All"],
-                index=0, key="range_select_main"
-            )
+        selected_asset = st.selectbox("Select Asset to View", assets, index=default_index, key="asset_select_main")
 
-        # FULL data for the selected asset (no slicing)
-        asset_market = market_df[market_df["asset"] == selected_asset].copy()
+        # FULL history for the asset (no artificial range filter)
+        asset_market = (
+            market_df[market_df["asset"] == selected_asset]
+            .dropna(subset=["open", "high", "low", "close", "timestamp_pst"])
+            .sort_values("timestamp_pst")
+            .copy()
+        )
+
         if asset_market.empty:
             st.warning(f"No market data found for {selected_asset}.")
         else:
-            # Ensure sorted time and clean series for plotting
-            asset_market = asset_market.sort_values("timestamp_pst")
-            tseries = asset_market["timestamp_pst"]
-            start_ts = tseries.min()
-            end_ts = tseries.max()
+            last_price = asset_market["close"].iloc[-1]
+            pf = ",.8f" if last_price < 0.001 else ",.6f" if last_price < 1 else ",.4f"
 
-            # Decide initial x-axis range (but do NOT slice the data)
-            if pd.isna(end_ts) or pd.isna(start_ts):
-                st.warning("timestamp_pst could not be parsed.")
-            else:
-                if range_choice == "4 hours": init_start = end_ts - timedelta(hours=4)
-                elif range_choice == "12 hours": init_start = end_ts - timedelta(hours=12)
-                elif range_choice == "1 day": init_start = end_ts - timedelta(days=1)
-                elif range_choice == "3 days": init_start = end_ts - timedelta(days=3)
-                elif range_choice == "7 days": init_start = end_ts - timedelta(days=7)
-                elif range_choice == "30 days": init_start = end_ts - timedelta(days=30)
-                else: init_start = start_ts
+            fig = go.Figure()
+            fig.add_trace(go.Candlestick(
+                x=asset_market["timestamp_pst"],
+                open=asset_market["open"],
+                high=asset_market["high"],
+                low=asset_market["low"],
+                close=asset_market["close"],
+                name=selected_asset,
+                increasing_line_color="#26a69a", decreasing_line_color="#ef5350",
+                increasing_fillcolor="rgba(38,166,154,0.5)", decreasing_fillcolor="rgba(239,83,80,0.5)",
+                line=dict(width=1)
+            ))
 
-                last_price = asset_market["close"].iloc[-1]
-                pf = ",.8f" if last_price < 0.001 else ",.6f" if last_price < 1 else ",.4f"
-                st.metric(f"Last Price for {selected_asset}", f"${last_price:{pf}}")
+            # ML signals overlay
+            if {"p_up", "p_down"}.issubset(asset_market.columns):
+                sig = asset_market.dropna(subset=["p_up", "p_down"]).copy()
+                if not sig.empty:
+                    sig["confidence"] = (sig["p_up"] - sig["p_down"]).abs()
+                    sizes = (sig["confidence"] * 100.0) / 5.0 + 3.0
+                    colors = np.where(sig["p_down"] > sig["p_up"], "#ff6b6b", "#51cf66")
+                    fig.add_trace(go.Scatter(
+                        x=sig["timestamp_pst"], y=sig["close"], mode="markers", name="ML Signals",
+                        marker=dict(size=sizes, color=colors, opacity=0.7, line=dict(width=1, color="white")),
+                        customdata=list(zip(sig["p_up"], sig["p_down"], sig["confidence"])),
+                        hovertemplate="<b>ML Signal</b><br>Time: %{x|%Y-%m-%d %H:%M}<br>"
+                                      "Price: $%{y:.6f}<br>P(Up): %{customdata[0]:.3f}<br>"
+                                      "P(Down): %{customdata[1]:.3f}<br>"
+                                      "Confidence: %{customdata[2]:.3f}<extra></extra>",
+                    ))
 
-                # Candlestick over FULL dataset
-                fig = go.Figure()
-                fig.add_trace(go.Candlestick(
-                    x=asset_market["timestamp_pst"],
-                    open=asset_market["open"], high=asset_market["high"],
-                    low=asset_market["low"], close=asset_market["close"],
-                    name=selected_asset,
-                    increasing_line_color="#26a69a", decreasing_line_color="#ef5350",
-                    increasing_fillcolor="rgba(38,166,154,0.5)", decreasing_fillcolor="rgba(239,83,80,0.5)",
-                    line=dict(width=1)
-                ))
-
-                # ML signals overlay (FULL dataset)
-                sig_cols_ok = {"p_up", "p_down"}.issubset(asset_market.columns)
-                if sig_cols_ok:
-                    sig = asset_market.dropna(subset=["p_up", "p_down"]).copy()
-                    if not sig.empty:
-                        sig["confidence"] = (sig["p_up"] - sig["p_down"]).abs()
-                        sizes = (sig["confidence"] * 100.0) / 5.0 + 3.0
-                        colors = np.where(sig["p_down"] > sig["p_up"], "#ff6b6b", "#51cf66")
+            # Buy/Sell markers from trades (full span)
+            if not trades_df.empty and "timestamp_pst" in trades_df.columns:
+                asset_trades = trades_df[trades_df["asset"] == selected_asset].copy()
+                if not asset_trades.empty:
+                    marker_y = asset_market["low"].min() - (asset_market["high"].max() - asset_market["low"].min()) * 0.02
+                    buys = asset_trades[asset_trades["unified_action"].str.lower().isin(["buy","open"])].copy()
+                    if not buys.empty:
+                        if "valid_at_open" not in buys.columns: buys["valid_at_open"] = True
+                        if "violation_reason" not in buys.columns: buys["violation_reason"] = ""
+                        if "revalidated_hint" not in buys.columns: buys["revalidated_hint"] = False
+                        buy_prices = buys["price"].apply(float)
+                        buy_reasons = buys.get("reason", pd.Series([""] * len(buys))).fillna("")
+                        buy_colors = np.where(buys["valid_at_open"].fillna(True), "#4caf50", "#f59e0b")
+                        buy_valid_str = buys["valid_at_open"].map(lambda x: "Yes" if x else "No")
+                        buy_reval_str = buys["revalidated_hint"].map(lambda x: "Re-validated bounce: Yes" if x else "")
+                        buy_viol_str = buys["violation_reason"].fillna("")
                         fig.add_trace(go.Scatter(
-                            x=sig["timestamp_pst"], y=sig["close"], mode="markers", name="ML Signals",
-                            marker=dict(size=sizes, color=colors, opacity=0.55, line=dict(width=1, color="white")),
-                            customdata=list(zip(sig["p_up"], sig["p_down"], sig["confidence"])),
-                            hovertemplate="<b>ML Signal</b><br>Time: %{x|%Y-%m-%d %H:%M}<br>"
-                                          "Price: $%{y:.6f}<br>P(Up): %{customdata[0]:.3f}<br>"
-                                          "P(Down): %{customdata[1]:.3f}<br>"
-                                          "Confidence: %{customdata[2]:.3f}<extra></extra>",
+                            x=buys["timestamp_pst"], y=[marker_y] * len(buys), mode="markers", name="BUY",
+                            marker=dict(symbol="triangle-up", size=14, color=buy_colors, line=dict(width=1, color="white")),
+                            customdata=np.stack((buy_prices, buy_reasons, buy_valid_str, buy_reval_str, buy_viol_str), axis=-1),
+                            hovertemplate="<b>BUY</b> @ $%{customdata[0]:.8f}<br>%{x|%H:%M:%S}"
+                                          "<br>Reason: %{customdata[1]}<br>Valid at OPEN: %{customdata[2]}"
+                                          "<br>%{customdata[3]}<br>%{customdata[4]}<extra></extra>",
                         ))
 
-                # Buy/Sell markers from trades (FULL dataset)
-                if not trades_df.empty and "timestamp_pst" in trades_df.columns:
-                    asset_trades = trades_df[trades_df["asset"] == selected_asset].copy()
-                    if not asset_trades.empty:
-                        marker_y = asset_market["low"].min() - (asset_market["high"].max() - asset_market["low"].min()) * 0.02
-                        buys = asset_trades[asset_trades["unified_action"].str.lower().isin(["buy","open"])].copy()
-                        if not buys.empty:
-                            if "valid_at_open" not in buys.columns: buys["valid_at_open"] = True
-                            if "violation_reason" not in buys.columns: buys["violation_reason"] = ""
-                            if "revalidated_hint" not in buys.columns: buys["revalidated_hint"] = False
-                            buy_prices = buys["price"].apply(float)
-                            buy_reasons = buys.get("reason", pd.Series([""] * len(buys))).fillna("")
-                            buy_colors = np.where(buys["valid_at_open"].fillna(True), "#4caf50", "#f59e0b")
-                            buy_valid_str = buys["valid_at_open"].map(lambda x: "Yes" if x else "No")
-                            buy_reval_str = buys["revalidated_hint"].map(lambda x: "Re-validated bounce: Yes" if x else "")
-                            buy_viol_str = buys["violation_reason"].fillna("")
-                            fig.add_trace(go.Scatter(
-                                x=buys["timestamp_pst"], y=[marker_y] * len(buys), mode="markers", name="BUY",
-                                marker=dict(symbol="triangle-up", size=12, color=buy_colors, line=dict(width=1, color="white")),
-                                customdata=np.stack((buy_prices, buy_reasons, buy_valid_str, buy_reval_str, buy_viol_str), axis=-1),
-                                hovertemplate="<b>BUY</b> @ $%{customdata[0]:.8f}<br>%{x|%H:%M:%S}"
-                                              "<br>Reason: %{customdata[1]}<br>Valid at OPEN: %{customdata[2]}"
-                                              "<br>%{customdata[3]}<br>%{customdata[4]}<extra></extra>",
-                            ))
-
-                        sells = asset_trades[asset_trades["unified_action"].str.lower().isin(["sell","close"])].copy()
-                        if not sells.empty:
-                            sell_prices = sells["price"].apply(float)
-                            sell_reasons = sells.get("reason", pd.Series([""] * len(sells))).fillna("")
-                            fig.add_trace(go.Scatter(
-                                x=sells["timestamp_pst"], y=[marker_y] * len(sells), mode="markers", name="SELL",
-                                marker=dict(symbol="triangle-down", size=12, color="#f44336", line=dict(width=1, color="white")),
-                                customdata=np.stack((sell_prices, sell_reasons), axis=-1),
-                                hovertemplate="<b>SELL</b> @ $%{customdata[0]:.8f}<br>%{x|%H:%M:%S}"
-                                              "<br>Reason: %{customdata[1]}<extra></extra>",
-                            ))
-
-                # Missed markers (FULL dataset)
-                if not missed_buys_df.empty:
-                    asset_missed_buys = missed_buys_df[missed_buys_df['asset'] == selected_asset].copy()
-                    if not asset_missed_buys.empty:
+                    sells = asset_trades[asset_trades["unified_action"].str.lower().isin(["sell","close"])].copy()
+                    if not sells.empty:
+                        sell_prices = sells["price"].apply(float)
+                        sell_reasons = sells.get("reason", pd.Series([""] * len(sells))).fillna("")
                         fig.add_trace(go.Scatter(
-                            x=asset_missed_buys['timestamp_pst'], y=asset_missed_buys['price'],
-                            mode="markers", name="Missed BUY (add to position)",
-                            marker=dict(symbol="circle-open", size=10, color="#4caf50", line=dict(width=2, color="#4caf50")),
-                            customdata=np.stack((
-                                asset_missed_buys['p_up'], asset_missed_buys['p_down'],
-                                asset_missed_buys['confidence'], asset_missed_buys['price']
-                            ), axis=-1),
-                            hovertemplate="<b>Missed BUY (add to position)</b><br>%{x|%Y-%m-%d %H:%M}<br>"
-                                          "Price: $%{customdata[3]:.8f}<br>"
-                                          "P(Up): %{customdata[0]:.3f}<br>"
-                                          "P(Down): %{customdata[1]:.3f}<br>"
-                                          "Confidence: %{customdata[2]:.3f}<extra></extra>",
+                            x=sells["timestamp_pst"], y=[marker_y] * len(sells), mode="markers", name="SELL",
+                            marker=dict(symbol="triangle-down", size=14, color="#f44336", line=dict(width=1, color="white")),
+                            customdata=np.stack((sell_prices, sell_reasons), axis=-1),
+                            hovertemplate="<b>SELL</b> @ $%{customdata[0]:.8f}<br>%{x|%H:%M:%S}"
+                                          "<br>Reason: %{customdata[1]}<extra></extra>",
                         ))
 
-                if not missed_sells_df.empty:
-                    asset_missed_sells = missed_sells_df[missed_sells_df['asset'] == selected_asset].copy()
-                    if not asset_missed_sells.empty:
-                        fig.add_trace(go.Scatter(
-                            x=asset_missed_sells['timestamp_pst'], y=asset_missed_sells['price'],
-                            mode="markers", name="Missed SELL (in position)",
-                            marker=dict(symbol="square-open", size=10, color="#f44336", line=dict(width=2, color="#f44336")),
-                            customdata=np.stack((
-                                asset_missed_sells['p_up'], asset_missed_sells['p_down'],
-                                asset_missed_sells['confidence'], asset_missed_sells['price']
-                            ), axis=-1),
-                            hovertemplate="<b>Missed SELL (in position)</b><br>%{x|%Y-%m-%d %H:%M}<br>"
-                                          "Price: $%{customdata[3]:.8f}<br>"
-                                          "P(Up): %{customdata[0]:.3f}<br>"
-                                          "P(Down): %{customdata[1]:.3f}<br>"
-                                          "Confidence: %{customdata[2]:.3f}<extra></extra>",
-                        ))
+            # Layout with rangeslider & rangeselector
+            tick_format = "%m/%d %H:%M"
+            fig.update_layout(
+                title=f"{selected_asset} — Full History (scroll with slider)",
+                template="plotly_dark" if st.session_state.theme == "dark" else "plotly_white",
+                xaxis_rangeslider_visible=True,
+                xaxis=dict(
+                    title="Time (PST)",
+                    type="date",
+                    tickformat=tick_format,
+                    showgrid=True,
+                    gridcolor="rgba(59,66,82,0.3)" if st.session_state.theme == "dark" else "rgba(128,128,128,0.1)",
+                    rangeselector=dict(
+                        buttons=[
+                            dict(count=4, label="4h", step="hour", stepmode="backward"),
+                            dict(count=12, label="12h", step="hour", stepmode="backward"),
+                            dict(count=1, label="1d", step="day", stepmode="backward"),
+                            dict(count=3, label="3d", step="day", stepmode="backward"),
+                            dict(count=7, label="7d", step="day", stepmode="backward"),
+                            dict(step="all", label="All")
+                        ]
+                    )
+                ),
+                yaxis=dict(
+                    title="Price (USD)",
+                    tickformat=".8f" if last_price < 0.001 else ".6f" if last_price < 1 else ".4f",
+                    showgrid=True,
+                    gridcolor="rgba(59,66,82,0.3)" if st.session_state.theme == "dark" else "rgba(128,128,128,0.1)"
+                ),
+                hovermode="x unified",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+                height=780, margin=dict(l=60, r=20, t=80, b=80),
+                plot_bgcolor="rgba(14,17,23,1)" if st.session_state.theme == "dark" else "rgba(250,250,250,0.8)",
+                paper_bgcolor="rgba(14,17,23,1)" if st.session_state.theme == "dark" else "rgba(255,255,255,1)",
+                font_color="#FAFAFA" if st.session_state.theme == "dark" else "#262626",
+            )
 
-                # Layout with range slider enabled + initial window
-                tick_format = "%H:%M"  # Plotly will adapt tick density
-                chart_bg = "rgba(14,17,23,1)" if st.session_state.theme == "dark" else "rgba(255,255,255,1)"
-                chart_grid = "rgba(59,66,82,0.3)" if st.session_state.theme == "dark" else "rgba(128,128,128,0.1)"
-                chart_text = "#FAFAFA" if st.session_state.theme == "dark" else "#262626"
-
-                fig.update_layout(
-                    title=f"{selected_asset} — Price & Trades (Full history; use slider to scroll)",
-                    template="plotly_dark" if st.session_state.theme == "dark" else "plotly_white",
-                    xaxis=dict(
-                        title="Time (PST)",
-                        type="date",
-                        tickformat=tick_format,
-                        showgrid=True, gridcolor=chart_grid,
-                        rangeslider=dict(visible=True),  # <-- slider ON
-                        range=[init_start, end_ts],       # <-- initial viewport only
-                    ),
-                    yaxis=dict(
-                        title="Price (USD)",
-                        showgrid=True, gridcolor=chart_grid,
-                    ),
-                    hovermode="x unified",
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
-                    height=750, margin=dict(l=60, r=20, t=80, b=80),
-                    plot_bgcolor=chart_bg, paper_bgcolor=chart_bg,
-                    font_color=chart_text,
-                )
-                st.plotly_chart(
-                    fig,
-                    use_container_width=True,
-                    config={"displayModeBar": True, "modeBarButtonsToAdd": ["drawline","drawopenpath","drawclosedpath"], "scrollZoom": True}
-                )
-
-                # Simple counts
-                miss_buys_now = 0 if missed_buys_df.empty else len(missed_buys_df[missed_buys_df["asset"]==selected_asset])
-                miss_sells_now = 0 if missed_sells_df.empty else len(missed_sells_df[missed_sells_df["asset"]==selected_asset])
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.caption(f"Missed BUYs (add to position): **{miss_buys_now}**")
-                with col2:
-                    st.caption(f"Missed SELLs (in position): **{miss_sells_now}**")
+            st.plotly_chart(
+                fig,
+                use_container_width=True,
+                config={"displayModeBar": True, "modeBarButtonsToAdd": ["drawline","drawopenpath","drawclosedpath"], "scrollZoom": True}
+            )
 
 # ----- TAB 2: P&L Analysis -----
 with tab2:
@@ -998,8 +915,8 @@ with tab2:
             fig_pnl.update_layout(title="Total Portfolio P&L (PST)", template="plotly_dark" if st.session_state.theme == "dark" else "plotly_white",
                                   yaxis_title="P&L (USD)", xaxis_title="Date (PST)", hovermode="x unified",
                                   plot_bgcolor=chart_bg, paper_bgcolor=chart_bg, font_color=chart_text,
-                                  xaxis=dict(gridcolor=chart_grid, rangeslider=dict(visible=True)),  # slider for P&L too
-                                  yaxis=dict(gridcolor=chart_grid))
+                                  xaxis=dict(gridcolor=chart_grid), yaxis=dict(gridcolor=chart_grid),
+                                  xaxis_rangeslider_visible=True)
             st.plotly_chart(fig_pnl, use_container_width=True)
 
         st.markdown("#### Per-Asset Realized P&L")
@@ -1330,11 +1247,3 @@ with st.sidebar:
             </div>
             """, unsafe_allow_html=True
         )
-
-
-
-
-
-
-
-
