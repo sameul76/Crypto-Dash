@@ -763,64 +763,80 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         asset_market_raw = market_df[market_df["asset"] == selected_asset].copy()
 
         # ---- normalize x + OHLC ----
-        if "__x__" not in asset_market_raw.columns and "timestamp_pst" in asset_market_raw.columns:
-            t = pd.to_datetime(asset_market_raw["timestamp_pst"], errors="coerce")
-            try:
-                if getattr(t.dt, "tz", None) is None:
-                    t = t.dt.tz_localize(TZ_PST)
-                else:
-                    t = t.dt.tz_convert(TZ_PST)
-            except Exception:
-                t = pd.to_datetime(asset_market_raw["timestamp_pst"], errors="coerce", utc=True).dt.tz_convert(TZ_PST)
-            asset_market_raw["__x__"] = t.dt.tz_localize(None)
+asset_market_raw = market_df[market_df["asset"] == selected_asset].copy()
 
-        # force numeric OHLC so Plotly doesn't drop the candle trace
-        for c in ["open", "high", "low", "close"]:
-            if c in asset_market_raw.columns:
-                asset_market_raw[c] = pd.to_numeric(asset_market_raw[c], errors="coerce")
+# ---- normalize x + OHLC ----
+if "__x__" not in asset_market_raw.columns and "timestamp_pst" in asset_market_raw.columns:
+    t = pd.to_datetime(asset_market_raw["timestamp_pst"], errors="coerce")
+    try:
+        if getattr(t.dt, "tz", None) is None:
+            t = t.dt.tz_localize(TZ_PST)
+        else:
+            t = t.dt.tz_convert(TZ_PST)
+    except Exception:
+        t = pd.to_datetime(asset_market_raw["timestamp_pst"], errors="coerce", utc=True).dt.tz_convert(TZ_PST)
+    asset_market_raw["__x__"] = t.dt.tz_localize(None)
 
-        # keep rows where ALL five fields exist; drop duplicate x keeping the last
-        need_cols = ["__x__", "open", "high", "low", "close"]
-        asset_market_raw = asset_market_raw.sort_values("__x__")
-        asset_candles = asset_market_raw.dropna(subset=[col for col in need_cols if col in asset_market_raw.columns]).copy()
-        if not asset_candles.empty:
-            asset_candles = asset_candles.drop_duplicates(subset="__x__", keep="last")
+# force numeric OHLC so Plotly doesn't drop the candle trace
+for c in ["open", "high", "low", "close"]:
+    if c in asset_market_raw.columns:
+        asset_market_raw[c] = pd.to_numeric(asset_market_raw[c], errors="coerce")
 
-        # rows that still lack complete OHLC (we’ll line-plot close so newest data is still visible)
-        asset_incomplete = asset_market_raw.loc[
-            ~asset_market_raw.index.isin(asset_candles.index)
-        ].copy()
+asset_market_raw = asset_market_raw.sort_values("__x__")
 
-        # ---- metric ----
-        last_close = asset_market_raw["close"].dropna().iloc[-1] if asset_market_raw["close"].notna().any() else np.nan
-        if pd.notna(last_close):
-            pf = ",.8f" if last_close < 0.001 else ",.6f" if last_close < 1 else ",.4f"
-            st.metric(f"Last Price for {selected_asset}", f"${last_close:{pf}}")
+# keep rows where ALL five fields exist; drop duplicate x keeping the last
+need_cols = ["__x__", "open", "high", "low", "close"]
+present_cols = [col for col in need_cols if col in asset_market_raw.columns]
+asset_candles = asset_market_raw.dropna(subset=present_cols).copy()
+if not asset_candles.empty:
+    asset_candles = asset_candles.drop_duplicates(subset="__x__", keep="last")
 
-        fig = go.Figure()
+# rows that still lack complete OHLC (we’ll line-plot close so newest data is still visible)
+asset_incomplete = asset_market_raw.loc[~asset_market_raw.index.isin(asset_candles.index)].copy()
 
-        # 1) Candlesticks
-        if not asset_candles.empty:
-            fig.add_trace(go.Candlestick(
-                x=asset_candles["__x__"],
-                open=asset_candles["open"], high=asset_candles["high"],
-                low=asset_candles["low"], close=asset_candles["close"],
-                name=f"{selected_asset} (candles)",
-                increasing_line_color="#26a69a", decreasing_line_color="#ef5350",
-                increasing_fillcolor="rgba(38,166,154,0.5)", decreasing_fillcolor="rgba(239,83,80,0.5)",
-                line=dict(width=1)
-            ))
+# ---- SYNTHETIC CANDLES (optional fallback) ----
+# If there are NO true candles but we have close + __x__, create tiny-range candles so the series renders.
+if asset_candles.empty and {"__x__", "close"}.issubset(asset_market_raw.columns):
+    tmp = asset_market_raw.dropna(subset=["__x__", "close"]).copy()
+    if not tmp.empty:
+        # choose a small epsilon based on price scale (avoid zero-height candles)
+        eps = np.maximum(tmp["close"].abs() * 1e-4, 1e-9)  # 1bp or 1e-9 min
+        tmp["open"] = tmp["close"]
+        tmp["high"] = tmp["close"] + eps
+        tmp["low"]  = tmp["close"] - eps
+        asset_candles = tmp[["__x__", "open", "high", "low", "close"]].drop_duplicates(subset="__x__", keep="last")
 
-        # 2) Fallback line for incomplete OHLC (keeps newest visible)
-        if not asset_incomplete.empty and asset_incomplete[["__x__","close"]].dropna().shape[0] > 0:
-            tmp = asset_incomplete.dropna(subset=["__x__","close"]).copy()
-            tmp = tmp.drop_duplicates(subset="__x__", keep="last")
-            fig.add_trace(go.Scatter(
-                x=tmp["__x__"], y=tmp["close"],
-                mode="lines+markers", name="Price (incomplete OHLC)",
-                line=dict(width=1, dash="dot"),
-                hovertemplate="<b>Price (incomplete OHLC)</b><br>%{x|%Y-%m-%d %H:%M}<br>Close: $%{y:.8f}<extra></extra>",
-            ))
+# ---- metric ----
+last_close = asset_market_raw["close"].dropna().iloc[-1] if asset_market_raw["close"].notna().any() else np.nan
+if pd.notna(last_close):
+    pf = ",.8f" if last_close < 0.001 else ",.6f" if last_close < 1 else ",.4f"
+    st.metric(f"Last Price for {selected_asset}", f"${last_close:{pf}}")
+
+fig = go.Figure()
+
+# 1) Candlesticks (real + synthetic if needed)
+if not asset_candles.empty:
+    fig.add_trace(go.Candlestick(
+        x=asset_candles["__x__"],
+        open=asset_candles["open"], high=asset_candles["high"],
+        low=asset_candles["low"], close=asset_candles["close"],
+        name=f"{selected_asset} (candles)",
+        increasing_line_color="#26a69a", decreasing_line_color="#ef5350",
+        increasing_fillcolor="rgba(38,166,154,0.5)", decreasing_fillcolor="rgba(239,83,80,0.5)",
+        line=dict(width=1)
+    ))
+
+# 2) Fallback line for truly incomplete rows (keeps newest visible)
+if not asset_incomplete.empty and asset_incomplete[["__x__", "close"]].dropna().shape[0] > 0:
+    tmp = asset_incomplete.dropna(subset=["__x__", "close"]).copy()
+    tmp = tmp.drop_duplicates(subset="__x__", keep="last")
+    fig.add_trace(go.Scatter(
+        x=tmp["__x__"], y=tmp["close"],
+        mode="lines+markers", name="Price (incomplete OHLC)",
+        line=dict(width=1, dash="dot"),
+        hovertemplate="<b>Price (incomplete OHLC)</b><br>%{x|%Y-%m-%d %H:%M}<br>Close: $%{y:.8f}<extra></extra>",
+    ))
+
 
 
 # ----- TAB 2: P&L Analysis -----
@@ -1147,4 +1163,5 @@ with st.sidebar:
             </div>
             """, unsafe_allow_html=True
         )
+
 
