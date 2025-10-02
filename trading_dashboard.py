@@ -219,19 +219,26 @@ def _confidence_from_probs(pu, pdn):
 # ========= Data loading (cached) =========
 @st.cache_data(ttl=60)
 def load_data(trades_link: str, market_link: str):
-    trades = pd.DataFrame();  tb = _download_drive_bytes(trades_link)
-    if tb: trades = _read_parquet_or_csv(tb, "Trades")
+    trades = pd.DataFrame()
+    tb = _download_drive_bytes(trades_link)
+    if tb:
+        trades = _read_parquet_or_csv(tb, "Trades")
 
-    market = pd.DataFrame();  mb = _download_drive_bytes(market_link)
-    if mb: market = _read_parquet_or_csv(mb, "Market")
+    market = pd.DataFrame()
+    mb = _download_drive_bytes(market_link)
+    if mb:
+        market = _read_parquet_or_csv(mb, "Market")
 
     # ---- TRADES ----
     if not trades.empty:
         trades = lower_strip_cols(trades)
         colmap = {}
-        if "value" in trades.columns: colmap["value"] = "usd_value"
-        if "side" in trades.columns and "action" in trades.columns: colmap["side"] = "trade_direction"
-        elif "side" in trades.columns and "action" not in trades.columns: colmap["side"] = "action"
+        if "value" in trades.columns:
+            colmap["value"] = "usd_value"
+        if "side" in trades.columns and "action" in trades.columns:
+            colmap["side"] = "trade_direction"
+        elif "side" in trades.columns and "action" not in trades.columns:
+            colmap["side"] = "action"
         trades = trades.rename(columns=colmap)
 
         if "action" in trades.columns:
@@ -253,25 +260,30 @@ def load_data(trades_link: str, market_link: str):
             if col in trades.columns:
                 trades[col] = trades[col].apply(lambda x: Decimal(str(x)) if pd.notna(x) else Decimal(0))
 
+        # ensure datetime type if stringy
         if "timestamp_pst" in trades.columns and not pd.api.types.is_datetime64_any_dtype(trades["timestamp_pst"]):
             trades["timestamp_pst"] = pd.to_datetime(trades["timestamp_pst"], errors="coerce")
 
     # ---- MARKET ----
     if not market.empty:
         market = lower_strip_cols(market)
-        if "product_id" in market.columns: market = market.rename(columns={"product_id": "asset"})
-        if "asset" in market.columns: market["asset"] = market["asset"].apply(unify_symbol)
+        if "product_id" in market.columns:
+            market = market.rename(columns={"product_id": "asset"})
+        if "asset" in market.columns:
+            market["asset"] = market["asset"].apply(unify_symbol)
         market = normalize_prob_columns(market)
         for col in ["open", "high", "low", "close"]:
             if col in market.columns:
                 market[col] = pd.to_numeric(market[col], errors="coerce")
 
-        if "timestamp_pst" in market.columns and not pd.api.types.is_datetime64_any_dtype(market["timestamp_pst"]:
-        ):
+        # ✅ fixed parenthesis here
+        if "timestamp_pst" in market.columns and not pd.api.types.is_datetime64_any_dtype(market["timestamp_pst"]):
             market["timestamp_pst"] = pd.to_datetime(market["timestamp_pst"], errors="coerce")
 
+    # Normalize to UTC + PST tz-aware columns
     trades, market = normalize_all_times(trades, market)
     return trades, market
+
 
 # ========= P&L / Trades utils =========
 def format_timedelta_hhmm(td):
@@ -1097,3 +1109,4 @@ with tab6:
         "(opportunities to add to positions), and missed SELL signals only when you were in a position. "
         "This provides insights for position sizing and adding to existing holdings based on strong signals."
     )
+
