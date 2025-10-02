@@ -122,8 +122,8 @@ def apply_theme():
         """, unsafe_allow_html=True)
 
 # ---- Data sources ----
-TRADES_LINK = "https://drive.google.com/file/d/1cSeYf4kWJA49lMdQ1_yQ3hRui6wdrLD-/view?usp=sharing"
-MARKET_LINK = "https://drive.google.com/file/d/1s1_TQqyAhE337jvz544egecvRGOjaBwx/view?usp=sharing"
+TRADES_LINK = "https://drive.google.com/file/d/1cSeYf4kWJA49lMdQ1_yQ3hRui6wdrLD-/view?usp=drive_link"
+MARKET_LINK = "https://drive.google.com/file/d/1nkCGmrIS7fRyIIrQTC3aGOmsyNrfDUj6/view?usp=drive_link"
 
 DEFAULT_ASSET = "GIGA-USD"
 
@@ -134,31 +134,71 @@ if "theme" not in st.session_state:
     st.session_state.theme = "light"
 
 # ========= Helpers =========
-def _drive_id(url_or_id: str) -> str:
+def _extract_file_id(url_or_id: str) -> str:
+    """Extract Google Drive file ID from URL."""
     if not url_or_id:
         return ""
-    s = url_or_id.strip()
-    m = re.search(r"/d/([A-Za-z0-9_-]{20,})", s);  m = m or re.search(r"[?&]id=([A-Za-z0-9_-]{20,})", s)
-    return (m.group(1) if m else s)
+    
+    patterns = [
+        r'/d/([a-zA-Z0-9_-]{25,})',
+        r'id=([a-zA-Z0-9_-]{25,})',
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, url_or_id)
+        if match:
+            return match.group(1)
+    
+    return url_or_id.strip()
 
-def _download_drive_bytes(url_or_id: str) -> bytes | None:
-    fid = _drive_id(url_or_id)
-    if not fid:
+def _download_drive_bytes(url_or_id: str, label: str = "File") -> bytes | None:
+    """Download from Google Drive - optimized for Streamlit Cloud."""
+    file_id = _extract_file_id(url_or_id)
+    
+    if not file_id:
+        st.error(f"{label}: Invalid file ID")
         return None
-    base = "https://drive.google.com/uc?export=download"
+    
+    download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+    
     try:
-        with requests.Session() as s:
-            r1 = s.get(base, params={"id": fid}, stream=True, timeout=60)
-            if "text/html" in (r1.headers.get("Content-Type") or ""):
-                m = re.search(r"confirm=([0-9A-Za-z_-]+)", r1.text)
-                if m:
-                    r2 = s.get(base, params={"id": fid, "confirm": m.group(1)}, stream=True, timeout=60)
-                    r2.raise_for_status()
-                    return r2.content
-            r1.raise_for_status()
-            return r1.content
+        session = requests.Session()
+        response = session.get(download_url, stream=True, timeout=30)
+        
+        # Handle virus scan confirmation for large files
+        token = None
+        for key, value in response.cookies.items():
+            if key.startswith('download_warning'):
+                token = value
+                break
+        
+        if token:
+            params = {'id': file_id, 'confirm': token}
+            response = session.get(download_url, params=params, stream=True, timeout=30)
+        
+        if response.status_code != 200:
+            st.error(f"{label}: HTTP {response.status_code}")
+            return None
+        
+        content_type = response.headers.get('Content-Type', '')
+        if 'text/html' in content_type:
+            st.error(f"{label}: Got HTML instead of file. Check sharing permissions.")
+            st.info("File must be set to 'Anyone with the link can view'")
+            return None
+        
+        data = response.content
+        
+        if len(data) == 0:
+            st.error(f"{label}: Downloaded 0 bytes")
+            return None
+        
+        return data
+        
+    except requests.exceptions.Timeout:
+        st.error(f"{label}: Download timeout (>30s)")
+        return None
     except Exception as e:
-        st.error(f"Network error downloading file ID {fid}: {e}")
+        st.error(f"{label}: Download failed - {e}")
         return None
 
 def _read_parquet_or_csv(b: bytes, label: str) -> pd.DataFrame:
@@ -217,15 +257,15 @@ def _confidence_from_probs(pu, pdn):
     return float(abs(float(pu) - float(pdn)))
 
 # ========= Data loading (cached) =========
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=300, show_spinner=False)
 def load_data(trades_link: str, market_link: str):
     trades = pd.DataFrame()
-    tb = _download_drive_bytes(trades_link)
+    tb = _download_drive_bytes(trades_link, "Trades")
     if tb:
         trades = _read_parquet_or_csv(tb, "Trades")
 
     market = pd.DataFrame()
-    mb = _download_drive_bytes(market_link)
+    mb = _download_drive_bytes(market_link, "Market")
     if mb:
         market = _read_parquet_or_csv(mb, "Market")
 
@@ -543,7 +583,7 @@ def identify_missed_buys(market_df: pd.DataFrame, trades_df: pd.DataFrame, posit
             signal_time = row['timestamp_pst']
             position_qty = get_position_at_time(position_history, asset, signal_time)
             if position_qty > 0:
-                continue  # already in position
+                continue
             
             executed = False
             if not executed_buys.empty:
@@ -645,7 +685,6 @@ def flag_threshold_violations(trades: pd.DataFrame) -> pd.DataFrame:
     df["revalidated_hint"] = reason_text.str.contains("re-validated") | reason_text.str.contains("revalidated")
     return df
 
-# === Dynamic entry config (for what-if analysis) ===
 DYNAMIC_ENTRY_UI = {
     "confirmation_bounce_pct": 0.0025,
     "timeout_minutes": 40,
@@ -658,7 +697,7 @@ st.markdown("## Crypto Trading Strategy")
 st.caption("ML Signals with Price-Based Entry/Exit (displayed in PST)")
 apply_theme()
 
-# ========= Sidebar controls (theme + refresh + upload override) =========
+# ========= Sidebar controls =========
 with st.sidebar:
     st.markdown("<h1 style='text-align:center;'>Crypto Strategy</h1>", unsafe_allow_html=True)
     col1, col2 = st.columns([1, 2])
@@ -677,10 +716,11 @@ with st.sidebar:
     uploaded_market = st.file_uploader("Upload market CSV/Parquet to override", type=["csv", "parquet", "pq"], key="upload_market")
 
 # ========= Load data =========
-trades_df, market_df = load_data(TRADES_LINK, MARKET_LINK)
+with st.spinner("Loading data from Google Drive..."):
+    trades_df, market_df = load_data(TRADES_LINK, MARKET_LINK)
+
 elapsed = seconds_since_last_run()
 
-# If a file is uploaded, completely override market_df
 if uploaded_market is not None:
     override_df = _read_uploaded_market(uploaded_market)
     if not override_df.empty:
@@ -689,7 +729,6 @@ if uploaded_market is not None:
         st.session_state.last_refresh = time.time()
         st.info("Using uploaded market data (overrides Google Drive).")
 
-# Ensure we have __x__ for Plotly if the source was Drive
 if not market_df.empty and "__x__" not in market_df.columns and "timestamp_pst" in market_df.columns:
     t = pd.to_datetime(market_df["timestamp_pst"], errors="coerce")
     try:
@@ -702,10 +741,7 @@ if not market_df.empty and "__x__" not in market_df.columns and "timestamp_pst" 
     market_df["timestamp_pst"] = t
     market_df["__x__"] = t.dt.tz_localize(None)
 
-# >>> Validation flags <<<
 trades_df = flag_threshold_violations(trades_df) if not trades_df.empty else trades_df
-
-# >>> Track positions and identify missed buys/sells <<<
 position_history = track_positions_over_time(trades_df) if not trades_df.empty else pd.DataFrame()
 missed_buys_df = identify_missed_buys(market_df, trades_df, position_history, DYNAMIC_ENTRY_UI) if not market_df.empty else pd.DataFrame()
 missed_sells_df = identify_missed_sells(market_df, trades_df, position_history, DYNAMIC_ENTRY_UI) if not market_df.empty else pd.DataFrame()
@@ -729,7 +765,7 @@ with st.sidebar:
         st.markdown(f"**Assets:** {market_df['asset'].nunique():,}")
 
 # ========= Debug panel =========
-with st.expander("🔎 Data Freshness Debug", expanded=True):
+with st.expander("🔎 Data Freshness Debug", expanded=False):
     if not market_df.empty and "timestamp_pst" in market_df.columns:
         st.write(f"**Market window (PST):** {market_df['timestamp_pst'].min()} → {market_df['timestamp_pst'].max()}")
         st.write(f"**Total Market Records:** {len(market_df):,}")
@@ -764,7 +800,6 @@ with tab1:
 
         asset_market_raw = market_df[market_df["asset"] == selected_asset].copy()
 
-        # ---- normalize x + OHLC ----
         if "__x__" not in asset_market_raw.columns and "timestamp_pst" in asset_market_raw.columns:
             t = pd.to_datetime(asset_market_raw["timestamp_pst"], errors="coerce")
             try:
@@ -790,17 +825,15 @@ with tab1:
 
         asset_incomplete = asset_market_raw.loc[~asset_market_raw.index.isin(asset_candles.index)].copy()
 
-        # ---- SYNTHETIC CANDLES fallback if no real OHLC rows ----
         if asset_candles.empty and {"__x__", "close"}.issubset(asset_market_raw.columns):
             tmp = asset_market_raw.dropna(subset=["__x__", "close"]).copy()
             if not tmp.empty:
-                eps = np.maximum(tmp["close"].abs() * 1e-4, 1e-9)  # tiny height
+                eps = np.maximum(tmp["close"].abs() * 1e-4, 1e-9)
                 tmp["open"] = tmp["close"]
                 tmp["high"] = tmp["close"] + eps
                 tmp["low"]  = tmp["close"] - eps
                 asset_candles = tmp[["__x__", "open", "high", "low", "close"]].drop_duplicates(subset="__x__", keep="last")
 
-        # ---- metric ----
         last_close = asset_market_raw["close"].dropna().iloc[-1] if asset_market_raw["close"].notna().any() else np.nan
         if pd.notna(last_close):
             pf = ",.8f" if last_close < 0.001 else ",.6f" if last_close < 1 else ",.4f"
@@ -808,7 +841,6 @@ with tab1:
 
         fig = go.Figure()
 
-        # 1) Candlesticks (real or synthetic)
         if not asset_candles.empty:
             fig.add_trace(go.Candlestick(
                 x=asset_candles["__x__"],
@@ -820,7 +852,6 @@ with tab1:
                 line=dict(width=1)
             ))
 
-        # 2) Fallback line for truly incomplete rows
         if not asset_incomplete.empty and asset_incomplete[["__x__", "close"]].dropna().shape[0] > 0:
             tmp = asset_incomplete.dropna(subset=["__x__", "close"]).copy()
             tmp = tmp.drop_duplicates(subset="__x__", keep="last")
@@ -831,7 +862,6 @@ with tab1:
                 hovertemplate="<b>Price (incomplete OHLC)</b><br>%{x|%Y-%m-%d %H:%M}<br>Close: $%{y:.8f}<extra></extra>",
             ))
 
-        # 3) ML signals
         if {"p_up", "p_down", "close", "__x__"}.issubset(asset_market_raw.columns):
             sig = asset_market_raw.dropna(subset=["__x__","p_up","p_down","close"]).copy()
             if not sig.empty:
@@ -851,7 +881,6 @@ with tab1:
                                   "<br>Confidence: %{customdata[2]:.3f}<extra></extra>",
                 ))
 
-        # 4) Trade markers (convert to same tz-naive PST x)
         marker_y = None
         yref = asset_candles["low"] if not asset_candles.empty else asset_market_raw["close"].dropna()
         if not yref.empty:
@@ -887,7 +916,6 @@ with tab1:
                         hovertemplate="<b>SELL</b><br>%{x|%H:%M:%S}<extra></extra>",
                     ))
 
-        # 5) Layout + rangeslider
         fig.update_layout(
             title=f"{selected_asset} — Full History",
             template="plotly_dark" if st.session_state.theme == "dark" else "plotly_white",
@@ -1075,7 +1103,7 @@ with tab4:
                 else:
                     st.dataframe(invalid_disp, use_container_width=True, hide_index=True)
             else:
-                st.success("No violations detected 🎉")
+                st.success("No violations detected")
             st.caption("Open = buy execution records; validity is evaluated against per-asset thresholds and logged probabilities at that time.")
 
 # ----- TAB 5: Missed Entries -----
