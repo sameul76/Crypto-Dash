@@ -148,7 +148,7 @@ def apply_theme():
 
 # ---- Google Drive links ----
 TRADES_LINK = "https://drive.google.com/file/d/1cSeYf4kWJA49lMdQ1_yQ3hRui6wdrLD-/view?usp=sharing"
-MARKET_LINK = "https://drive.google.com/file/d/1s1_TQqyAhE337jvz544egecvRGOjaBwx/view?usp=sharing"
+MARKET_LINK = "https://drive.google.com/file/d/1nkCGmrIS7fRyIIrQTC3aGOmsyNrfDUj6/view?usp=sharing"
 
 DEFAULT_ASSET = "GIGA-USD"
 
@@ -1247,3 +1247,4 @@ with st.sidebar:
             </div>
             """, unsafe_allow_html=True
         )
+
