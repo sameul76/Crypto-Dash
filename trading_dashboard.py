@@ -151,13 +151,11 @@ TRADES_LINK = "https://drive.google.com/file/d/1cSeYf4kWJA49lMdQ1_yQ3hRui6wdrLD-
 MARKET_LINK = "https://drive.google.com/file/d/1s1_TQqyAhE337jvz544egecvRGOjaBwx/view?usp=sharing"
 
 DEFAULT_ASSET = "GIGA-USD"
-REFRESH_INTERVAL = 300  # seconds
+REFRESH_INTERVAL = 300  # seconds (not used for auto-refresh anymore, just informational)
 
 # ---- Session state keys ----
 if "last_refresh" not in st.session_state:
     st.session_state.last_refresh = time.time()
-if "auto_refresh_enabled" not in st.session_state:
-    st.session_state.auto_refresh_enabled = True
 if "theme" not in st.session_state:
     st.session_state.theme = "light"
 
@@ -229,14 +227,6 @@ def normalize_prob_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 def seconds_since_last_run() -> int:
     return int(time.time() - st.session_state.get("last_refresh", 0))
-
-def maybe_auto_refresh() -> int:
-    elapsed = seconds_since_last_run()
-    if st.session_state.get("auto_refresh_enabled", False) and elapsed >= REFRESH_INTERVAL:
-        st.session_state.last_refresh = time.time()
-        st.cache_data.clear()
-        st.rerun()
-    return elapsed
 
 # === Thresholds used by the bot (keep in sync with bot CONFIG) ===
 ASSET_THRESHOLDS = {
@@ -371,6 +361,29 @@ def calculate_pnl_and_metrics(trades_df: pd.DataFrame):
         df["asset_cumulative_pnl"] = df.groupby("asset")["pnl"].transform(lambda x: x.cumsum())
     return pnl_per_asset, df, stats
 
+def summarize_realized_pnl(trades_with_pnl: pd.DataFrame):
+    """
+    Returns (overall_pnl_float, per_asset_df)
+    - overall = sum of realized 'pnl' (sell/close rows) across all assets
+    - per_asset_df = columns: ['Asset','Realized P&L ($)'] sorted desc
+    """
+    if trades_with_pnl is None or trades_with_pnl.empty or "pnl" not in trades_with_pnl.columns:
+        return 0.0, pd.DataFrame(columns=["Asset", "Realized P&L ($)"])
+
+    df = trades_with_pnl.copy()
+    df["pnl_float"] = df["pnl"].apply(lambda x: float(x) if pd.notna(x) else 0.0)
+
+    per_asset = (
+        df.groupby("asset")["pnl_float"]
+          .sum()
+          .reset_index()
+          .rename(columns={"asset": "Asset", "pnl_float": "Realized P&L ($)"})
+          .sort_values("Realized P&L ($)", ascending=False)
+    )
+
+    overall = float(per_asset["Realized P&L ($)"].sum()) if not per_asset.empty else 0.0
+    return overall, per_asset
+
 def match_trades_fifo(trades_df: pd.DataFrame):
     if trades_df is None or trades_df.empty or "timestamp_pst" not in trades_df.columns: 
         return pd.DataFrame(), pd.DataFrame()
@@ -484,6 +497,7 @@ def track_positions_over_time(trades_df: pd.DataFrame) -> pd.DataFrame:
                 'position_qty': float(current_qty)
             })
     return pd.DataFrame(position_history)
+
 def identify_missed_buys(market_df: pd.DataFrame, trades_df: pd.DataFrame, position_history: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     if market_df is None or market_df.empty or "timestamp_pst" not in market_df.columns:
         return pd.DataFrame()
@@ -513,7 +527,7 @@ def identify_missed_buys(market_df: pd.DataFrame, trades_df: pd.DataFrame, posit
             signal_time = row['timestamp_pst']
             position_qty = get_position_at_time(position_history, asset, signal_time)
             
-            # CORRECTED LOGIC: Skip if we are ALREADY in a position.
+            # Skip if already in a position
             if position_qty > 0:
                 continue
             
@@ -625,13 +639,13 @@ DYNAMIC_ENTRY_UI = {
     "match_window_minutes": 5,
 }
 
-# ========= Load + maybe refresh =========
+# ========= Load + manual refresh =========
 st.markdown("## Crypto Trading Strategy")
 st.caption("ML Signals with Price-Based Entry/Exit (displayed in PST)")
 apply_theme()
 
 trades_df, market_df = load_data(TRADES_LINK, MARKET_LINK)
-elapsed = maybe_auto_refresh()
+elapsed = int(time.time() - st.session_state.get("last_refresh", 0))
 
 # >>> Validation flags <<<
 trades_df = flag_threshold_violations(trades_df) if not trades_df.empty else trades_df
@@ -645,19 +659,14 @@ missed_sells_df = identify_missed_sells(market_df, trades_df, position_history, 
 with st.sidebar:
     st.markdown("<h1 style='text-align:center;'>Crypto Strategy</h1>", unsafe_allow_html=True)
 
-    col1, col2, col3 = st.columns([1, 1, 1])
+    # ONE: Theme + Refresh  (no auto-toggle)
+    col1, col2 = st.columns([1, 2])
     with col1:
         if st.button("🌙" if st.session_state.theme == "light" else "☀️", help="Toggle theme"):
             st.session_state.theme = "dark" if st.session_state.theme == "light" else "light"
             st.rerun()
     with col2:
-        st.session_state.auto_refresh_enabled = st.toggle(
-            "🔄",
-            value=st.session_state.get("auto_refresh_enabled", True),
-            help="Auto-Refresh (5min)",
-        )
-    with col3:
-        if st.button("↻", help="Force refresh"):
+        if st.button("↻ Refresh data", help="Clear cache and reload"):
             st.cache_data.clear()
             st.session_state.last_refresh = time.time()
             st.rerun()
@@ -694,6 +703,19 @@ with st.sidebar:
     st.markdown(f"**Market:** {'✅' if not market_df.empty else '❌'} {len(market_df):,}")
     if not market_df.empty and "asset" in market_df.columns:
         st.markdown(f"**Assets:** {market_df['asset'].nunique():,}")
+
+    # Optional quick P&L badge in sidebar
+    if not trades_df.empty:
+        _overall_realized, _ = summarize_realized_pnl(calculate_pnl_and_metrics(trades_df)[1])
+        st.markdown(
+            f"""
+            <div style='text-align: center; padding: 0.5rem; background-color: rgba(128,128,128,0.1); border-radius: 0.25rem; margin-top: 0.5rem;'>
+                <div style='font-size: 0.8rem; color: {"#16a34a" if _overall_realized >= 0 else "#ef4444"}; font-weight: 600;'>
+                    Overall Realized P&L: ${_overall_realized:+.2f}
+                </div>
+            </div>
+            """, unsafe_allow_html=True
+        )
 
     st.markdown("---")
     st.markdown("**🔧 Tuning (what-if)**")
@@ -948,8 +970,11 @@ with tab2:
         st.warning("No trade data loaded to analyze P&L or missing timestamp_pst column.")
     else:
         pnl_summary, trades_with_pnl, stats = calculate_pnl_and_metrics(trades_df)
+        overall_realized, per_asset_pnl = summarize_realized_pnl(trades_with_pnl)
+
         st.markdown("### Strategy Performance")
-        c1, c2, c3, c4 = st.columns(4)
+        c0, c1, c2, c3, c4 = st.columns(5)
+        with c0: st.metric("Overall Realized P&L", f"${overall_realized:+.2f}")
         with c1: st.metric("Closed Trades", f"{stats.get('total_trades', 0):,}")
         with c2: st.metric("Win Rate", f"{stats.get('win_rate', 0):.1f}%")
         with c3:
@@ -971,6 +996,42 @@ with tab2:
                                   plot_bgcolor=chart_bg, paper_bgcolor=chart_bg, font_color=chart_text,
                                   xaxis=dict(gridcolor=chart_grid), yaxis=dict(gridcolor=chart_grid))
             st.plotly_chart(fig_pnl, use_container_width=True)
+
+        st.markdown("#### Per-Asset Realized P&L")
+        if not per_asset_pnl.empty:
+            st.dataframe(
+                per_asset_pnl,
+                column_config={
+                    "Asset": st.column_config.TextColumn(width="small"),
+                    "Realized P&L ($)": st.column_config.NumberColumn(format="$%.2f"),
+                },
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            # Bar chart for per-asset P&L
+            fig_bar = go.Figure()
+            fig_bar.add_trace(go.Bar(
+                x=per_asset_pnl["Asset"],
+                y=per_asset_pnl["Realized P&L ($)"],
+                name="Realized P&L ($)"
+            ))
+            fig_bar.add_hline(y=0, line_dash="dash", line_color="gray")
+            chart_bg = "rgba(14,17,23,1)" if st.session_state.theme == "dark" else "rgba(255,255,255,1)"
+            chart_grid = "rgba(59,66,82,0.3)" if st.session_state.theme == "dark" else "rgba(128,128,128,0.1)"
+            chart_text = "#FAFAFA" if st.session_state.theme == "dark" else "#262626"
+            fig_bar.update_layout(
+                title="Per-Asset Realized P&L",
+                template="plotly_dark" if st.session_state.theme == "dark" else "plotly_white",
+                yaxis_title="P&L (USD)", xaxis_title="Asset",
+                hovermode="x unified",
+                plot_bgcolor=chart_bg, paper_bgcolor=chart_bg, font_color=chart_text,
+                xaxis=dict(gridcolor=chart_grid), yaxis=dict(gridcolor=chart_grid),
+                height=420
+            )
+            st.plotly_chart(fig_bar, use_container_width=True)
+        else:
+            st.info("No realized P&L yet (need at least one completed sell to compute).")
 
 # ----- TAB 3: Trade History -----
 with tab3:
@@ -1265,6 +1326,7 @@ with st.sidebar:
             </div>
             """, unsafe_allow_html=True
         )
+
 
 
 
