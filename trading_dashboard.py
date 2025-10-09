@@ -20,7 +20,7 @@ getcontext().prec = 30
 
 # Data sources
 TRADES_LINK = "https://drive.google.com/file/d/1cSeYf4kWJA49lMdQ1_yQ3hRui6wdrLD-/view?usp=drive_link"
-MARKET_LINK = "https://drive.google.com/file/d/1d3Rhzsz7_PkX7uOz9Xnu9bBMoHk89uhS/view?usp=sharing"
+MARKET_LINK = "https://drive.google.com/file/d/1XRCdYf6gz7RDauG5gruP64QAubWoENy-/view?usp=sharing"
 
 DEFAULT_ASSET = "GIGA-USD"
 TZ_PST = "America/Los_Angeles"
@@ -1516,6 +1516,7 @@ with st.sidebar:
             """,
             unsafe_allow_html=True
         )
+
 
 
 
